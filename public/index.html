@@ -4,6 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Chat</title>
+<script>
+window.onerror = function(m, s, l, c) {
+  document.body.insertAdjacentHTML('afterbegin',
+    '<pre style="color:red;background:#fff;font-size:12px;padding:8px">' + m + '\n@' + l + ':' + c + '</pre>');
+};
+</script>
 <style>
   :root {
     color-scheme: light dark;
@@ -145,82 +151,80 @@
   <div id="messages">
     <div id="empty">说点什么开始对话吧</div>
   </div>
-  <form id="form">
+  <form id="form" onsubmit="return false;">
     <textarea id="input" placeholder="输入消息…" rows="1"></textarea>
-    <button id="send" type="button">发送</button>
+    <button id="sendBtn" type="button" onclick="sendMessage()">发送</button>
   </form>
 </div>
 <script>
-  const sessionId = (() => {
-    let id = localStorage.getItem("chat_session_id");
-    if (!id) {
-      id = crypto.randomUUID();
-      localStorage.setItem("chat_session_id", id);
-    }
-    return id;
-  })();
-
-  const messagesEl = document.getElementById("messages");
-  const form = document.getElementById("form");
-  const input = document.getElementById("input");
-  const sendBtn = document.getElementById("send");
-  const emptyEl = document.getElementById("empty");
-
-  function addMessage(role, text, opts = {}) {
-    emptyEl.remove();
-    const el = document.createElement("div");
-    el.className = `msg ${role}` + (opts.pending ? " pending" : "") + (opts.error ? " error" : "");
-    el.textContent = text;
-    messagesEl.appendChild(el);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return el;
+var sessionId = (function() {
+  var id = localStorage.getItem('chat_session_id');
+  if (!id) {
+    id = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    localStorage.setItem('chat_session_id', id);
   }
+  return id;
+})();
 
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 120) + "px";
-  });
+var messagesEl = document.getElementById('messages');
+var input = document.getElementById('input');
+var sendBtn = document.getElementById('sendBtn');
+var emptyEl = document.getElementById('empty');
 
-  async function sendMessage() {
-    const text = input.value.trim();
-    if (!text || sendBtn.disabled) return;
+function addMessage(role, text, pending, error) {
+  if (emptyEl && emptyEl.parentNode) { emptyEl.parentNode.removeChild(emptyEl); emptyEl = null; }
+  var el = document.createElement('div');
+  el.className = 'msg ' + role + (pending ? ' pending' : '') + (error ? ' error' : '');
+  el.textContent = text;
+  messagesEl.appendChild(el);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return el;
+}
 
-    addMessage("user", text);
-    input.value = "";
-    input.style.height = "auto";
-    sendBtn.disabled = true;
+function sendMessage() {
+  var text = input.value.replace(/^\s+|\s+$/g, '');
+  if (!text || sendBtn.disabled) return;
 
-    const pending = addMessage("ai", "思考中…", { pending: true });
+  addMessage('user', text, false, false);
+  input.value = '';
+  input.style.height = 'auto';
+  sendBtn.disabled = true;
 
-    try {
-      const res = await fetch("api/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, message: text }),
-      });
-      const data = await res.json();
-      pending.remove();
+  var pending = addMessage('ai', '思考中…', true, false);
+
+  fetch('/chat/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: sessionId, message: text })
+  }).then(function(res) {
+    return res.json().then(function(data) {
+      if (pending.parentNode) pending.parentNode.removeChild(pending);
       if (!res.ok) {
-        addMessage("ai", data.error || "出错了", { error: true });
+        addMessage('ai', data.error || '出错了', false, true);
       } else {
-        addMessage("ai", data.reply);
+        addMessage('ai', data.result || data.reply || '(空回复)', false, false);
       }
-    } catch (err) {
-      pending.remove();
-      addMessage("ai", err.message, { error: true });
-    } finally {
-      sendBtn.disabled = false;
-      input.focus();
-    }
-  }
-
-  sendBtn.addEventListener("click", sendMessage);
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    });
+  }).catch(function(err) {
+    if (pending.parentNode) pending.parentNode.removeChild(pending);
+    addMessage('ai', err.message, false, true);
+  }).then(function() {
+    sendBtn.disabled = false;
+    input.focus();
   });
+}
+
+input.addEventListener('input', function() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+
+input.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
 </script>
 </body>
 </html>
