@@ -181,17 +181,9 @@
     input.style.height = Math.min(input.scrollHeight, 120) + "px";
   });
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-  
-      form.requestSubmit();
-    }
-  });
-
-  sendBtn.addEventListener("click", async (e) => {
-
+  async function sendMessage() {
     const text = input.value.trim();
-    if (!text) return;
+    if (!text || sendBtn.disabled) return;
 
     addMessage("user", text);
     input.value = "";
@@ -219,6 +211,14 @@
     } finally {
       sendBtn.disabled = false;
       input.focus();
+    }
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
     }
   });
 </script>
