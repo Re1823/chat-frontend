@@ -2,11 +2,9 @@
   "name": "chat-frontend",
   "version": "1.0.0",
   "private": true,
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.mjs"
   },
-  "dependencies": {
-    "express": "^4.19.2"
-  }
+  "engines": { "node": ">=18" }
 }
