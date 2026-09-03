@@ -5,7 +5,7 @@
     <div class="recent-title">住在这里的对话</div><div id="sessions" class="sessions"></div>
     <div class="aside-foot"><button id="settingsBtn">⚙ <span>接入与设置</span><b id="providerDot"></b></button></div>
   </aside>
-  <main><header><button id="menuBtn" class="icon mobile" aria-label="打开会话列表">☰</button><div><h1 id="chatTitle">今天，也在这里</h1><p id="statusLine">选一条路，让他醒来</p></div><button id="modelBtn" class="model-pill" aria-label="模型与接入设置"><span id="modelLabel">未接入</span><em>⌄</em></button></header>
+  <main><header><button id="menuBtn" class="icon mobile" aria-label="打开会话列表">☰</button><div><h1 id="chatTitle">今天，也在这里</h1><p id="statusLine">选一条路，让他醒来</p></div><button id="continueBtn" class="continue-pill" hidden>↗ 续窗</button><button id="modelBtn" class="model-pill" aria-label="模型与接入设置"><span id="modelLabel">未接入</span><em>⌄</em></button></header>
     <section id="messages" class="messages"><div class="welcome"><div class="orb"><span></span></div><h2>有些话，不必急着说完。</h2><p>接上你常用的模型。对话会留在这台浏览器里，慢慢长成日子。</p><button id="welcomeSetup">接一条路进来 →</button></div></section>
     <footer><div class="composer"><textarea id="input" rows="1" placeholder="说点什么…"></textarea><button class="attach" title="附件（即将支持）">＋</button><button id="send" class="send" disabled>↑</button></div><div class="hint">Enter 发送 · Shift + Enter 换行 <span>内容保存在本机</span></div></footer>
   </main>
@@ -14,4 +14,11 @@
   <div class="providers" id="providers"></div>
   <div class="form"><label>接口地址<input id="base" autocomplete="off"></label><label>API Key<input id="key" type="password" autocomplete="off" placeholder="只存在当前浏览器"></label><label>模型名<input id="model" autocomplete="off"></label><label>协议<select id="protocol"><option value="responses">OpenAI Responses</option><option value="chat">OpenAI Chat Completions</option><option value="anthropic">Anthropic Messages</option></select></label><label>称呼 / 系统提示<textarea id="system" rows="3" placeholder="你住在这里。说话自然、克制，记得对面是一个人。"></textarea></label></div>
   <div id="testMsg" class="test-msg"></div><div class="actions"><button id="test">试着敲门</button><button id="save" class="primary">保存并接入</button></div><p class="security">密钥仅保存在当前浏览器的 localStorage，并经由电脑上的代理转发。同一 Wi‑Fi 内的设备可访问，请勿把 4173 端口映射到公网。ChatGPT 订阅不能替代 OpenAI API Key。</p>
+</section>
+<section id="continueSheet" class="sheet continue-sheet"><header><div><small>续窗</small><h2 id="continueHeading">把工作接过去</h2></div><button id="closeContinue" class="icon" aria-label="关闭续窗">×</button></header>
+  <p class="continue-intro">原会话会完整保留。下面这份启动包只带走当前任务、偏好边界、关键决定和最近的干净对话。</p>
+  <div class="continue-stats"><span id="continueKept">0 条有效消息</span><span id="continueSize">0 字</span><span>原窗不覆盖</span></div>
+  <label class="continue-editor">启动包（可在开启前修改）<textarea id="continueDraft" rows="18"></textarea></label>
+  <div class="continue-note">续窗不会替代长期记忆；失败时不会改动原会话。建议重要项目同时导出一份 JSON 备份。</div>
+  <div class="actions continue-actions"><button id="backupContinue">导出原会话</button><button id="startContinue" class="primary">开启新会话</button></div>
 </section><div id="toast" class="toast"></div><script src="app.js"></script></body></html>
