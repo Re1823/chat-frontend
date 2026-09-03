@@ -6,6 +6,8 @@
 - OpenAI-compatible 中转站（Chat Completions 或 Responses）
 - ChatGPT 对应 API 模型（默认 `chat-latest`）
 - Codex 模型（默认 `gpt-5.6-sol`，Responses API）
+- Linux/WSL/VPS 中长期运行的交互式 Claude Code tmux runtime（默认关闭）
+- Ombre Brain Memory Dashboard（浏览器经 Node 后端只读访问）
 
 ## 续窗
 
@@ -23,7 +25,25 @@ npm start
 
 ## 同步到 GitHub
 
-在 PowerShell 中运行 `./sync.ps1`，脚本只会暂存本项目的前端、服务端入口和说明文件，然后提交、拉取远端更新并推送到 `main`。
+在 PowerShell 中运行 `./sync.ps1`，脚本会暂存本项目已存在的前端、服务端、`src/`、`hooks/`、`test/`、`docs/` 和项目配置文件，然后提交、拉取远端更新并推送到 `main`。运行前仍应检查工作树，确认没有不希望同步的项目文件。
+
+## 测试与流式协议
+
+运行 `npm test` 执行 Node 内置测试，无需安装第三方依赖。测试覆盖现有 provider 请求、流式聊天、续窗和浏览器本地数据格式。
+
+浏览器通过 `/api/chat` 请求 `application/x-ndjson`，接收统一的 turn 事件；未声明该格式的旧客户端仍会收到原有 SSE `delta`/`done` 数据，便于平滑兼容。
+
+## Claude Code tmux runtime
+
+tmux runtime 与现有 API provider 并存，只在 Linux/WSL/VPS 上显式启用。它向长期存在的交互式 Claude Code 发送当前一条新消息，不会每轮执行 `claude -p`，也不会把浏览器历史重新灌入 Claude。
+
+当前 Windows 环境可以运行全部 mock 测试，但不会尝试模拟或启动 tmux。启用前请阅读 [部署与采样说明](docs/claude-tmux-runtime.md)，并在目标环境核对实际 `claude --version`、`tmux -V` 和 hook payload。未经实测的 hook 字段只存在于版本 adapter，不进入核心 runtime。
+
+## Ombre Brain Memory Dashboard
+
+侧栏“记忆”打开原生 Memory 页面。浏览器只访问本项目的 `/api/ombre-dashboard/*`；Dashboard 密码、session cookie 和可选 Cloudflare Access service token 全部只存在 Node 环境。localhost 只用于最短真实验通，正式目标是 Node 后端经 cloudflared/Cloudflare Zero Trust 访问 OB。
+
+配置项和真实验证边界见 [Ombre Dashboard 说明](docs/ombre-dashboard.md)。Dashboard API 与未来 Claude Code 使用的 OB MCP 是两条独立通路；当前不会启动 Claude Code。
 
 ## 中转站填写
 

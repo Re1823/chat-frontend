@@ -1,6 +1,23 @@
 $ErrorActionPreference = 'Stop'
 
-git add -- public package.json server.mjs README.md sync.ps1
+$syncPaths = @(
+  'public'
+  'src'
+  'hooks'
+  'scripts'
+  'test'
+  'data/.gitkeep'
+  'docs'
+  'package.json'
+  'server.mjs'
+  'README.md'
+  'HANDOFF.md'
+  '.env.example'
+  '.gitignore'
+  'sync.ps1'
+) | Where-Object { Test-Path -LiteralPath $_ }
+
+git add -- $syncPaths
 
 git diff --cached --quiet
 if ($LASTEXITCODE -eq 0) {
@@ -12,4 +29,3 @@ $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
 git commit -m "chore: sync frontend $stamp"
 git pull --rebase origin main
 git push origin main
-

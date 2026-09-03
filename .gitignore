@@ -1,2 +1,7 @@
 node_modules/
 *.log
+data/*
+!data/.gitkeep
+.env
+.env.*
+!.env.example
