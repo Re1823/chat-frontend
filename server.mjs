@@ -7,6 +7,7 @@ import { createApiRequest, extractTextDelta } from './src/providers/api-runtime.
 import { turnEvent, writeTurnEvent } from './src/turns/events.mjs';
 import { loadClaudeTmuxConfig } from './src/config.mjs';
 import { createTmuxTransport } from './src/runtimes/tmux-transport.mjs';
+import { createRootBridgeTransport } from './src/runtimes/root-bridge-transport.mjs';
 import { createRuntimeRegistry } from './src/runtimes/runtime-registry.mjs';
 import { createTurnStore } from './src/turns/turn-store.mjs';
 import { createClaudeIngress } from './src/hooks/claude-ingress.mjs';
@@ -16,6 +17,7 @@ import { createOmbreDashboardService } from './src/ombre-dashboard/service.mjs';
 import { createOmbreDashboardRoutes } from './src/ombre-dashboard/routes.mjs';
 import { qiuqiuReadiness } from './src/readiness.mjs';
 import { loadLocalEnv } from './src/local-env.mjs';
+import { createModelUpstreamPolicy } from './src/security/model-upstream-policy.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -23,16 +25,17 @@ const host = process.env.HOST || '0.0.0.0';
 const mime = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.svg':'image/svg+xml' };
 const json = (res, status, data) => { res.writeHead(status, {'content-type':'application/json; charset=utf-8'}); res.end(JSON.stringify(data)); };
 const readBody = req => new Promise((resolve, reject) => { let s=''; req.on('data', c => { s += c; if (s.length > 2e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch(e) { reject(e); } }); });
-async function relay(req, res, test=false, suppliedBody) {
+async function relay(req, res, test=false, suppliedBody,validateUpstream) {
   try {
     const { config:cfg, messages=[] } = suppliedBody||await readBody(req);
     if (!cfg?.key || !cfg?.model) return json(res, 400, { error:'请先填写 API Key 和模型名' });
     const sample = test ? [{role:'user', content:'只回复 OK'}] : messages;
     const call = createApiRequest(cfg, sample, !test);
-    const upstream = await fetch(call.url, call.init);
+    if(validateUpstream)await validateUpstream(call.url);
+    const upstream = await fetch(call.url, {...call.init,redirect:'error'});
     if (!upstream.ok) {
-      const detail = (await upstream.text()).slice(0, 3000);
-      return json(res, upstream.status, { error:`上游 ${upstream.status}`, detail });
+      await upstream.body?.cancel().catch(()=>{});
+      return json(res, upstream.status, { error:`模型上游请求失败（${upstream.status}）` });
     }
     if (test) {
       const data = await upstream.json();
@@ -60,7 +63,7 @@ async function relay(req, res, test=false, suppliedBody) {
     writeTurnEvent(res,format,turnEvent.segmentDone(turnId));
     writeTurnEvent(res,format,turnEvent.done(turnId));
     res.end();
-  } catch (e) { if (!res.headersSent) json(res, 500, {error:e.message}); else res.end(); }
+  } catch (e) { if (!res.headersSent) json(res,e?.statusCode||502,{error:e?.code||'model_upstream_unavailable'}); else res.end(); }
 }
 
 const loopback=address=>['127.0.0.1','::1','::ffff:127.0.0.1'].includes(address||'');
@@ -68,8 +71,9 @@ const secretMatches=(actual,expected)=>{
   const a=Buffer.from(String(actual||'')),b=Buffer.from(String(expected||''));
   return a.length===b.length&&a.length>0&&timingSafeEqual(a,b);
 };
+const CLAUDE_CHANNEL_TEST_PROMPT='这是前端 Claude 通道测试。不要调用任何工具，不要读取或修改文件，不要调用 Ombre Brain，只回复：前端通道测试成功';
 
-export function createDwellServer({claudeRuntime,hookSecret='',ombreService,qiuqiuWorkspace='' }={}){
+export function createDwellServer({claudeRuntime,hookSecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream }={}){
   const ombreRoutes=ombreService?createOmbreDashboardRoutes(ombreService):null;
   return http.createServer(async(req,res)=>{
     try{
@@ -79,6 +83,16 @@ export function createDwellServer({claudeRuntime,hookSecret='',ombreService,qiuq
         const body=await readBody(req);
         const result=await claudeRuntime.ingestRaw(body);
         return json(res,200,{ok:true,...result});
+      }
+      if(req.method==='POST'&&req.url==='/api/internal/claude-code/test-turn'){
+        if(!loopback(req.socket.remoteAddress))return json(res,403,{ok:false,error:'Forbidden'});
+        if(!secretMatches(req.headers['x-dwell-hook-secret'],hookSecret))return json(res,401,{ok:false,error:'Unauthorized'});
+        const body=await readBody(req);
+        if(Object.keys(body).length!==1||body.op!=='run_minimal_test')return json(res,400,{ok:false,error:'Invalid diagnostic request'});
+        res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'close'});
+        const emit=event=>{writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};
+        try{await claudeRuntime.diagnosticChat({runtimeId:'claude-main',prompt:CLAUDE_CHANNEL_TEST_PROMPT,emit})}catch(error){if(!error.streamStarted)throw error}
+        return;
       }
       if(req.method==='POST'&&req.url==='/api/chat/stop'){
         if(!claudeRuntime)return json(res,503,{ok:false,error:'Claude tmux runtime 未配置'});
@@ -93,17 +107,19 @@ export function createDwellServer({claudeRuntime,hookSecret='',ombreService,qiuq
       }
       if(req.method==='POST'&&req.url==='/api/chat'){
         const body=await readBody(req);
-        if(body.config?.runtime!=='claude_tmux')return relay(req,res,false,body);
+        if(body.config?.runtime!=='claude_tmux')return relay(req,res,false,body,validateModelUpstream);
         if(!claudeRuntime)return json(res,503,{error:'Claude tmux runtime 未配置'});
         const prompt=[...(body.messages||[])].reverse().find(message=>message.role==='user')?.content;
         if(!String(prompt||'').trim())return json(res,400,{error:'当前 user prompt 不能为空'});
         await claudeRuntime.preflight(body.config.runtimeId);
         res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'keep-alive'});
-        const emit=event=>{writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};
-        try{await claudeRuntime.chat({runtimeId:body.config.runtimeId,prompt,emit})}catch(error){if(!error.streamStarted)throw error}
+        const client=new AbortController();
+        res.once('close',()=>{if(!res.writableEnded)client.abort()});
+        const emit=event=>{if(res.destroyed||res.writableEnded)return;writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};
+        try{await claudeRuntime.chat({runtimeId:body.config.runtimeId,prompt,emit,signal:client.signal})}catch(error){if(!error.streamStarted)throw error}
         return;
       }
-      if(req.method==='POST'&&req.url==='/api/test')return relay(req,res,true);
+      if(req.method==='POST'&&req.url==='/api/test')return relay(req,res,true,undefined,validateModelUpstream);
       if(ombreRoutes&&await ombreRoutes(req,res))return;
       if(req.method==='GET'&&req.url==='/api/qiuqiu/readiness'){
         let obDashboardConnected=false;
@@ -120,7 +136,7 @@ export function createDwellServer({claudeRuntime,hookSecret='',ombreService,qiuq
 }
 
 export async function createDefaultClaudeRuntime(config=loadClaudeTmuxConfig()){
-  const transport=createTmuxTransport({binary:config.tmuxBinary,socketName:config.tmuxSocket,submitDelayMs:config.submitDelayMs});
+  const transport=process.platform==='linux'?createRootBridgeTransport():createTmuxTransport({binary:config.tmuxBinary,socketName:config.tmuxSocket,submitDelayMs:config.submitDelayMs});
   const registry=createRuntimeRegistry({filePath:config.registryPath,transport});
   const captureRaw=createRawHookCapture({enabled:config.hookCapture,filePath:config.capturePath});
   const ingress=createClaudeIngress({captureRaw,debug:message=>{if(process.env.DWELL_CLAUDE_HOOK_DEBUG==='1')console.error(message)}});
@@ -133,6 +149,7 @@ if(process.argv[1]&&fileURLToPath(import.meta.url)===normalize(process.argv[1]))
   const config=loadClaudeTmuxConfig();
   const claudeRuntime=await createDefaultClaudeRuntime(config);
   const ombreService=createOmbreDashboardService();
-  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||''});
+  const allowPrivateForTests=process.env.NODE_ENV==='test'&&process.env.MODEL_UPSTREAM_ALLOW_PRIVATE_FOR_TESTS==='1';
+  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||'',validateModelUpstream:createModelUpstreamPolicy({allowPrivateForTests})});
   server.listen(port,host,()=>console.log(`dwell 已醒来：本机 http://127.0.0.1:${port} · 局域网请使用电脑的 IPv4 地址`));
 }

@@ -6,14 +6,14 @@ import { createTurnStore } from '../src/turns/turn-store.mjs';
 
 function fixture({state='connected',stopTimeoutMs=20}={}){
   const runtimeRecord={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};const prompts=[],interrupts=[];
-  const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value)};
+  const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value)};
   const registry={load:async()=>runtimeRecord,get:()=>runtimeRecord,reconcile:async()=>({state,runtime:runtimeRecord,inspection:{alive:state==='connected'}})};
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,submitDelayMs:250,stopTimeoutMs},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
-  return {runtime,prompts,interrupts};
+  return {runtime,prompts,interrupts,completions};
 }
 
 test('runtime maps canonical ordered frames to existing turn events',async()=>{
-  const {runtime,prompts}=fixture();const events=[];await runtime.initialize();
+  const {runtime,prompts,completions}=fixture();const events=[];await runtime.initialize();
   await runtime.chat({runtimeId:'runtime-main',turnId:'turn-1',prompt:'only new prompt',emit:event=>events.push(event)});
   assert.equal(prompts[0].prompt,'only new prompt');
   await runtime.ingestRaw({event:'message_display',message_id:'m',index:1,delta:'B'});
@@ -22,6 +22,7 @@ test('runtime maps canonical ordered frames to existing turn events',async()=>{
   await runtime.ingestRaw({event:'Stop'});
   assert.deepEqual(events.map(event=>event.type),['turn_started','segment_delta','segment_delta','segment_delta','segment_done','turn_done']);
   assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'ABC');
+  assert.deepEqual(completions,['turn-1']);
 });
 
 test('stop waits for confirmation and late stop closes an unconfirmed turn once',async()=>{
@@ -48,4 +49,38 @@ test('runtime serializes concurrent raw hook adaptation before applying frames',
   const first=runtime.ingestRaw({order:1});const second=runtime.ingestRaw({order:2});await new Promise(resolve=>setTimeout(resolve,1));
   assert.equal(calls,1);release();await Promise.all([first,second]);
   assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'12');
+});
+
+test('disabled runtime never auto-creates a missing session',async()=>{
+  let creates=0;
+  const record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/root'};
+  const registry={load:async()=>record,get:()=>record,reconcile:async()=>({state:'missing',runtime:record})};
+  const transport={createSession:async()=>{creates++}};
+  const runtime=createClaudeTmuxRuntime({config:{enabled:false,autoCreate:true},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
+  assert.equal((await runtime.initialize()).state,'missing');
+  assert.equal(creates,0);
+});
+
+test('client disconnect before bridge send discards the Node turn without sending',async()=>{
+  const {runtime,prompts}=fixture();await runtime.initialize();const controller=new AbortController();
+  controller.abort();
+  await assert.rejects(runtime.chat({runtimeId:'runtime-main',turnId:'turn-before-send',prompt:'x',emit:()=>{},signal:controller.signal}),/client disconnected/);
+  assert.equal(prompts.length,0);assert.equal(runtime.hasActiveTurn(),false);
+});
+
+test('client disconnect after bridge send stays detached until Stop completes it',async()=>{
+  const {runtime,prompts,completions}=fixture();await runtime.initialize();const controller=new AbortController();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'turn-detached',prompt:'x',emit:()=>{},signal:controller.signal});
+  controller.abort();assert.equal(prompts.length,1);assert.equal(runtime.hasActiveTurn(),true);
+  await runtime.ingestRaw({event:'Stop'});
+  assert.equal(runtime.hasActiveTurn(),false);assert.deepEqual(completions,['turn-detached']);
+  await runtime.chat({runtimeId:'runtime-main',turnId:'turn-next',prompt:'next',emit:()=>{}});
+  assert.equal(prompts.length,2);
+});
+
+test('terminal emit failure cannot leave a closed turn active',async()=>{
+  const {runtime}=fixture();await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'turn-emit-fails',prompt:'x',emit:event=>{if(event.type==='turn_done')throw new Error('closed response')}});
+  await assert.rejects(runtime.ingestRaw({event:'Stop'}),/closed response/);
+  assert.equal(runtime.hasActiveTurn(),false);
 });

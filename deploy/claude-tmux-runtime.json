@@ -1,0 +1,6 @@
+{
+  "runtimeId": "claude-main",
+  "sessionName": "dwell-claude",
+  "workspace": "/root",
+  "claudeCommand": "/usr/bin/claude"
+}

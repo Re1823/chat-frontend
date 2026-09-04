@@ -1,6 +1,6 @@
 # 项目交接：dwell 多模型聊天前端
 
-更新时间：2026-09-03（Asia/Shanghai）
+更新时间：2026-09-04（Asia/Shanghai）
 
 本文以当前磁盘上的项目文件和本次实际检查结果为准。当前项目目录：
 
@@ -9,6 +9,72 @@
 远端仓库：`https://github.com/Re1823/chat-frontend.git`
 
 需求参考 PDF：`F:\Downloads\from-terminal-to-frontend.pdf`
+
+## 最新权威状态（2026-09-04，新窗口先读）
+
+本节记录最新真实环境状态；若与本文后面的历史计划、旧测试数量、旧运行方式或风险描述冲突，以本节为准。
+
+### 公网部署已经完成并验收
+
+- 正式入口：`https://qiuqiu.reesia.xyz`。
+- 最终链路：手机/浏览器 → Cloudflare Access → Cloudflare Tunnel → VPS nginx `127.0.0.1:8080` → Node `127.0.0.1:4173`。
+- Cloudflare Access 已由用户配置并真机验证：Owner only + One-time PIN；未登录请求实际返回 302 并跳转 Access 登录页。
+- 用户已在正式域名登录，重新填写自己的 DeepSeek API Key，并真机确认聊天与流式回复正常。浏览器配置保存在该域名自己的 localStorage；局域网地址的配置不会自动迁移。
+- DeepSeek OpenAI-compatible 配置：Base URL `https://api.deepseek.com`，常用模型 `deepseek-chat`；`deepseek-reasoner` 仅在需要推理模型时选择。API Key 不写源码或 VPS env。
+- VPS：`45.77.179.165`，Ubuntu 24.04.4 LTS。项目目录 `/opt/qiuqiu/chat-frontend`，systemd 环境文件 `/etc/qiuqiu/chat-frontend.env`。
+- `chat-frontend.service` 使用低权限用户 `qiuqiu`，`Restart=on-failure`、`RestartSec=3`，已 enabled/active；此前已实际杀掉 Node 进程验证 systemd 能自动拉起。
+- `cloudflared.service` 已 enabled/active，Tunnel 名为 `qiuqiu-frontend`，Public Hostname 为 `qiuqiu.reesia.xyz` → HTTP `127.0.0.1:8080`。
+- nginx 配置检查通过。秋秋 nginx 只监听 `127.0.0.1:8080`，Node 只监听 `127.0.0.1:4173`；4173 未直接暴露公网。
+- `/api/internal/*` 在 Access 外层会先被登录保护；通过 Access 后仍由 nginx 明确返回 403。本机反代实测 `/api/internal/test` 为 403。
+- Xray 继续独占公网 `*:443`，没有修改或中断；`shared-diary.service` 没有修改或中断。公网 443 不由秋秋 nginx 占用。
+- `chat-frontend`、nginx、cloudflared、xray、shared-diary 最终只读验收均为 active 且 enabled。
+- 未开放新的 VPS 公网端口；没有执行整机 reboot，以免中断 Xray/日记，但开机启用状态已确认。
+
+### 公网安全改造已经完成
+
+- `src/security/model-upstream-policy.mjs` 为 `/api/chat` 和 `/api/test` 执行可信上游 origin allowlist 与 DNS 解析校验。
+- 默认可信 origin：Anthropic、OpenAI、DeepSeek；生产可通过 `MODEL_UPSTREAM_ALLOWLIST` 明确配置。
+- 拒绝 localhost、loopback、RFC1918、link-local、metadata、IPv6 ULA/link-local、URL credentials、异常 URL，并检查 hostname 的全部解析地址以防 DNS 绕过。
+- 上游 fetch 禁止 redirect；浏览器只收到稳定、收敛后的错误，不返回过多上游正文。
+- nginx 对 `/api/internal/` 明确返回 403；Cloudflare Access 保护整站。
+- 真实密码、OB cookie、Cloudflare token/secret、模型 API Key 均未写入源码、日志、浏览器 bundle 或 Git。
+- 当前最后完整自动测试为 **93/93 通过**；旧测试预期没有因安全改造而改写。部署后仅新增了下述 Memory 搜索竞态修复，尚未重新部署。
+
+### 最新前端续作（2026-09-04）
+
+- 修复 Memory 搜索请求竞态：连续输入时，较早但较晚返回的响应不再覆盖最新关键词结果。
+- 清空搜索会立即使在途旧请求失效，旧响应不会把已清空的搜索结果重新写回页面。
+- 新增两条行为测试覆盖乱序响应与清空搜索场景；完整测试 **93/93 通过**，`node --check public/app.js` 与 `git diff --check` 通过。
+- 本次没有修改后端 API、线上配置、Claude/tmux 冻结模块，也没有 commit、push 或部署。
+
+### Ombre Brain 当前真实状态
+
+- Dashboard 路径独立于聊天模型工具调用：Browser → Node backend → Ombre Brain Dashboard API。
+- 生产上游为 `https://www.reesia.xyz`，密码只在 VPS 环境文件中。
+- 最终 VPS 本地链路实测：OB connected，版本 `2.11.0`，当时 `memoryCount=313`；Memory 页面此前已由用户验收。
+- login、session cookie、并发登录去重、401 自动重登一次、status/buckets/search/detail、字段 normalize 和 Breath Lab 只读入口均已实现并测试。
+- 当前只是 Dashboard 可视化/代理能力；**聊天模型尚未获得 Ombre Brain MCP/tool-calling 能力**。不要把 Memory 页面能读数据误判为模型能主动读写 OB。
+
+### Claude tmux 冻结边界
+
+- `claude_tmux` 的 Windows + fake runner 核心和测试已经完成，但真实 Claude Code/tmux/hook payload 尚未验证。
+- 生产建议并实际保持 `CLAUDE_TMUX_ENABLED=false`；当前没有启动真实 Claude Code。
+- 不要根据教程猜死 `MessageDisplay`、Stop 或其他 hook schema。等订阅可用后，先记录 `claude --version`、`tmux -V` 和真实 raw hook payload，只调整 ingress adapter/启动配置。
+- 未经用户新指令，不要继续扩展 thinking、transcript、AskUserQuestion、terminal、多 runtime、OB MCP 或 tmux 功能。
+
+### 当前本地工作树与操作约束
+
+- 本地工作树仍有未提交的公网安全与部署文件：`.env.example`、`server.mjs`、`test/server-baseline.test.mjs`，以及新增 `deploy/`、`docs/deployment-vps.md`、`src/security/`、`test/model-upstream-security.test.mjs`。
+- `HANDOFF.md` 本身也是本轮更新内容。不要遗漏它以及 `src/`、`hooks/`、`test/`、`docs/`、`deploy/`。
+- 本轮没有 commit、push 或运行 `sync.ps1`。下个窗口除非用户明确要求，也不要擅自执行。
+- VPS 上的生产副本已经通过加密 SSH 同步并运行，但本地 Git 状态与 VPS 部署状态是两件事，不要用未提交来推断线上未部署。
+
+### 下一窗口建议起点
+
+1. 先读本节并运行 `git status --short`，不要重复部署或重新配置 Access/Tunnel。
+2. 如需验收线上，只做只读检查；不要修改 Cloudflare Access、Tunnel、Xray、nginx/Node 监听、shared-diary 或已工作的模型配置。
+3. 未来若接 Ombre Brain 给聊天模型，应新增独立 tool/MCP 闭环：模型 tool call → 执行 OB 工具 → tool result → 模型继续生成；不要让 Dashboard API 冒充 MCP。
+4. 未来若恢复 Claude Code，继续遵守真实 payload 采样优先和 `claude_tmux` core 冻结边界。
 
 ## 0. 最新暂停点（以本节为准）
 

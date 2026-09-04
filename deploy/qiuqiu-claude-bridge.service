@@ -1,0 +1,30 @@
+[Unit]
+Description=QIUQIU Claude root runtime bridge
+Requires=qiuqiu-claude-bridge.socket
+After=qiuqiu-claude-bridge.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/qiuqiu/chat-frontend.env
+ExecStart=/usr/bin/node /usr/local/lib/qiuqiu-claude-bridge/bridge.mjs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+RuntimeDirectory=qiuqiu-claude-bridge
+RuntimeDirectoryMode=0711
+RuntimeDirectoryPreserve=restart
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+UMask=0077
+KillMode=process
+StandardOutput=journal
+StandardError=journal

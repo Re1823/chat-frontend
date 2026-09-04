@@ -49,8 +49,56 @@ test('created and importance sort modes change order explicitly',()=>{
 
 test('filter, sort, search, scroll and selection live in one retained page state',()=>{
   assert.match(js,/const memoryState=\{activePrimaryFilter:'all',secondaryFilters:\{status:'all',domain:'',tag:''\},sortMode:'recent',searchQuery:'',scrollPosition:0,selectedBucketId:''\}/);
-  assert.match(js,/searchMemory\(query\)[\s\S]*memoryState\.searchQuery=query\.trim\(\)[\s\S]*memorySearchResults=null;renderMemoryList\(\)/);
+  assert.match(js,/searchMemory\(query\)[\s\S]*memoryState\.searchQuery=searchQuery[\s\S]*memorySearchResults=null;renderMemoryList\(\)/);
   assert.doesNotMatch(js,/searchMemory\(query\)[^{]*\{[^}]*activePrimaryFilter\s*=/);
+});
+
+test('stale Memory search responses cannot replace the newest query results',async()=>{
+  const start=js.indexOf('async function searchMemory');
+  const end=js.indexOf('async function runBreathDebug');
+  const pending=[];
+  const context=vm.createContext({
+    encodeURIComponent,
+    memoryState:{searchQuery:''},
+    memorySearchResults:null,
+    memorySearchRequestSequence:0,
+    renderMemoryList(){context.rendered=context.memorySearchResults},
+    fetch(url){return new Promise(resolve=>pending.push({url,resolve}))},
+    $(){return {innerHTML:''}},
+    escapeHtml:String
+  });
+  vm.runInContext(js.slice(start,end),context);
+  const older=vm.runInContext("searchMemory('old')",context);
+  const newer=vm.runInContext("searchMemory('new')",context);
+  pending[1].resolve({ok:true,json:async()=>({items:[{id:'new'}]})});
+  await newer;
+  pending[0].resolve({ok:true,json:async()=>({items:[{id:'old'}]})});
+  await older;
+  assert.equal(pending[0].url,'/api/ombre-dashboard/search?q=old');
+  assert.deepEqual(context.rendered,[{id:'new'}]);
+});
+
+test('clearing Memory search invalidates a request already in flight',async()=>{
+  const start=js.indexOf('async function searchMemory');
+  const end=js.indexOf('async function runBreathDebug');
+  let resolveSearch;
+  const context=vm.createContext({
+    encodeURIComponent,
+    memoryState:{searchQuery:''},
+    memorySearchResults:null,
+    memorySearchRequestSequence:0,
+    renderMemoryList(){context.rendered=context.memorySearchResults},
+    fetch(){return new Promise(resolve=>{resolveSearch=resolve})},
+    $(){return {innerHTML:''}},
+    escapeHtml:String
+  });
+  vm.runInContext(js.slice(start,end),context);
+  const inFlight=vm.runInContext("searchMemory('old')",context);
+  await vm.runInContext("searchMemory('')",context);
+  resolveSearch({ok:true,json:async()=>({items:[{id:'old'}]})});
+  await inFlight;
+  assert.equal(context.memoryState.searchQuery,'');
+  assert.equal(context.rendered,null);
 });
 
 test('whole cards are 44px touch buttons and open detail from the card',()=>{

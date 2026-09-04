@@ -43,3 +43,22 @@ test('stop endpoint sends Escape and waits for a real late Stop hook',async()=>{
     const events=(await response.text()).trim().split('\n').map(JSON.parse);assert.equal(events.at(-1).type,'turn_stopped');
   }finally{await close(server)}
 });
+
+test('send failure after streaming starts emits a structured terminal error',async()=>{
+  const fixture=runtimeFixture();
+  fixture.runtime=createClaudeTmuxRuntime({
+    config:{enabled:true,submitDelayMs:250,stopTimeoutMs:100},
+    transport:{sendPrompt:async()=>{throw new Error('bridge send failed')}},
+    registry:{load:async()=>({runtimeId:'runtime-main',sessionName:'dwell'}),get:()=>({runtimeId:'runtime-main',sessionName:'dwell'}),reconcile:async()=>({state:'connected',runtime:{runtimeId:'runtime-main',sessionName:'dwell'}})},
+    turnStore:createTurnStore(),ingress:createClaudeIngress()
+  });
+  await fixture.runtime.initialize();
+  const server=createDwellServer({claudeRuntime:fixture.runtime,hookSecret:'secret'});const port=await listen(server);
+  try{
+    const response=await fetch(`http://127.0.0.1:${port}/api/chat`,{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify({config:{runtime:'claude_tmux',runtimeId:'runtime-main'},messages:[{role:'user',content:'test'}]})});
+    assert.equal(response.status,200);
+    const events=(await response.text()).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(events.map(event=>event.type),['turn_started','turn_error']);
+    assert.equal(events[1].error,'bridge send failed');
+  }finally{await close(server)}
+});

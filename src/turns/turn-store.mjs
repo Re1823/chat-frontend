@@ -8,7 +8,7 @@ export function createTurnStore(){
   };
   const close=(turn,event)=>{
     if(turn.closed)return false;
-    turn.closed=true;turn.state=event.type;turn.emit(event);active=null;settleWaiters();return true;
+    turn.closed=true;turn.state=event.type;active=null;settleWaiters();turn.emit(event);return true;
   };
   return {
     start({runtimeId,turnId,emit}){
@@ -21,6 +21,7 @@ export function createTurnStore(){
     emit(runtimeId,turnId,event){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;turn.emit(event);return true},
     requestStop(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.state==='running')turn.state='stop_requested';return turn},
     finish(runtimeId,turnId,event){return close(requireActive(runtimeId,turnId),event)},
+    discard(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;turn.closed=true;turn.state='discarded';active=null;settleWaiters();return true},
     waitForInactive(runtimeId,turnId,timeoutMs){
       if(!this.matches(runtimeId,turnId))return Promise.resolve(true);
       return new Promise(resolve=>{const timer=setTimeout(()=>{inactiveWaiters.delete(done);resolve(false)},timeoutMs);const done=value=>{clearTimeout(timer);resolve(value)};inactiveWaiters.add(done)});

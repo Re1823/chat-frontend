@@ -1,0 +1,23 @@
+[Unit]
+Description=QIUQIU chat frontend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace qiuqiu with the dedicated, unprivileged service account created during deployment.
+User=qiuqiu
+Group=qiuqiu
+WorkingDirectory=/opt/qiuqiu/chat-frontend
+EnvironmentFile=/etc/qiuqiu/chat-frontend.env
+ExecStart=/usr/bin/node server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/qiuqiu/chat-frontend/data
+
+[Install]
+WantedBy=multi-user.target

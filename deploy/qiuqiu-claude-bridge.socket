@@ -1,0 +1,13 @@
+[Unit]
+Description=QIUQIU Claude root runtime bridge socket
+
+[Socket]
+ListenStream=/run/qiuqiu-claude-bridge/control.sock
+SocketUser=root
+SocketGroup=qiuqiu
+SocketMode=0660
+DirectoryMode=0711
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

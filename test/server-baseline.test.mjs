@@ -12,10 +12,10 @@ const freePort = () => new Promise((resolve, reject) => {
   server.listen(0, '127.0.0.1', () => { const port=server.address().port; server.close(() => resolve(port)); });
 });
 
-async function startApp(port) {
+async function startApp(port, extraEnv={}) {
   const child = spawn(process.execPath, ['server.mjs'], {
     cwd:new URL('..', import.meta.url),
-    env:{...process.env, PORT:String(port), HOST:'127.0.0.1'},
+    env:{...process.env, PORT:String(port), HOST:'127.0.0.1',...extraEnv},
     stdio:['ignore','pipe','pipe']
   });
   let output = '';
@@ -48,7 +48,7 @@ test('relays all existing provider protocols and preserves the SSE browser contr
   });
   const upstreamPort = await listen(upstream);
   const appPort = await freePort();
-  const app = await startApp(appPort);
+  const app = await startApp(appPort,{NODE_ENV:'test',MODEL_UPSTREAM_ALLOW_PRIVATE_FOR_TESTS:'1',MODEL_UPSTREAM_ALLOWLIST:`http://127.0.0.1:${upstreamPort}`});
   try {
     const base = `http://127.0.0.1:${upstreamPort}`;
     const cases = [
@@ -96,7 +96,7 @@ test('offers the unified NDJSON turn event model without removing legacy SSE', a
   const upstream = http.createServer((req,res) => { req.resume(); res.writeHead(200, {'content-type':'text/event-stream'}); res.end('data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'); });
   const upstreamPort = await listen(upstream);
   const appPort = await freePort();
-  const app = await startApp(appPort);
+  const app = await startApp(appPort,{NODE_ENV:'test',MODEL_UPSTREAM_ALLOW_PRIVATE_FOR_TESTS:'1',MODEL_UPSTREAM_ALLOWLIST:`http://127.0.0.1:${upstreamPort}`});
   try {
     const response = await fetch(`http://127.0.0.1:${appPort}/api/chat`, {method:'POST',headers:{'content-type':'application/json',accept:'application/x-ndjson'},body:JSON.stringify({config:{protocol:'chat',base:`http://127.0.0.1:${upstreamPort}`,key:'k',model:'m'},messages:[{role:'user',content:'hello'}]})});
     assert.equal(response.headers.get('content-type'), 'application/x-ndjson; charset=utf-8');
