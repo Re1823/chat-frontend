@@ -31,12 +31,16 @@ export function createRootBridgeClient({connect=path=>net.createConnection({path
 }
 
 export function createRootBridgeTransport({request=createRootBridgeClient(),sendRequest=createRootBridgeClient({timeoutMs:5000})}={}){
+  const operationId=value=>{if(!/^[A-Za-z0-9_-]{16,128}$/.test(value||''))throw bridgeError('invalid carryover operation',400);return value};
   return {
     async hasSession(){return Boolean((await request({op:'status'})).running)},
     async inspectSession(){const status=await request({op:'status'});return {exists:Boolean(status.running),alive:Boolean(status.running),panes:[]}},
     async createSession(){const result=await request({op:'ensure'});return {created:Boolean(result.created)}},
     async sendPrompt({turnId,prompt}){await sendRequest({op:'send',turnId,prompt})},
-    async interrupt(_sessionName,turnId){if(!turnId)throw bridgeError('turnId is required',400);await request({op:'stop',turnId})},
-    async complete(turnId){if(!turnId)throw bridgeError('turnId is required',400);await request({op:'complete',turnId})}
+    async thoughtSnapshot(turnId){return request({op:'thought_snapshot',turnId})},
+    async interrupt(_sessionName,turnId){if(!turnId)throw bridgeError('turnId is required',400);return await request({op:'stop',turnId})},
+    async complete(turnId){if(!turnId)throw bridgeError('turnId is required',400);await request({op:'complete',turnId})},
+    async activateCarryover(id){return request({op:'activate_carryover',operationId:operationId(id)})},
+    async rollbackCarryover(id){return request({op:'rollback_carryover',operationId:operationId(id)})}
   };
 }

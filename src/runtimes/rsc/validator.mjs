@@ -1,0 +1,5 @@
+import {contentBlocks,isCompactRecord} from './transcript-parser.mjs';
+const forbidden=/(bearer\s+|api[_ -]?key|token\s*[:=]|secret\s*[:=]|<system-reminder>|Traceback|\bdiff --git\b|(?:[A-Za-z]:\\|\/(?:root|home|tmp|etc|var)\/))/i;
+export function validateTarget(records,{targetSessionId,targetTokens,estimatedTokens}){const uuids=new Set();let parent=null;for(const record of records){if(record.sessionId!==targetSessionId||typeof record.uuid!=='string'||uuids.has(record.uuid)||record.parentUuid!==parent)return {valid:false,reason:'TARGET_CHAIN_INVALID'};uuids.add(record.uuid);parent=record.uuid;if(isCompactRecord(record)||record.isMeta||record.isSidechain)return {valid:false,reason:'FORBIDDEN_BLOCK'};if(contentBlocks(record).some(b=>b.type!=='text')||forbidden.test(JSON.stringify(record.message)))return {valid:false,reason:'FORBIDDEN_BLOCK'}}if(estimatedTokens>targetTokens)return {valid:false,reason:'BUDGET_EXCEEDED'};return {valid:true}}
+export function validateResume(){return {implemented:false,phase:2}}
+export function validateQuiescent(status){return status?.active===false&&status?.activeTurnId==null?{valid:true}:{valid:false,reason:'NOT_QUIESCENT'}}

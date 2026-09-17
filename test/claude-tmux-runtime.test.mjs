@@ -78,9 +78,10 @@ test('client disconnect after bridge send stays detached until Stop completes it
   assert.equal(prompts.length,2);
 });
 
-test('terminal emit failure cannot leave a closed turn active',async()=>{
+test('terminal emit failure detaches transport while retaining the completed turn journal',async()=>{
   const {runtime}=fixture();await runtime.initialize();
   await runtime.chat({runtimeId:'runtime-main',turnId:'turn-emit-fails',prompt:'x',emit:event=>{if(event.type==='turn_done')throw new Error('closed response')}});
-  await assert.rejects(runtime.ingestRaw({event:'Stop'}),/closed response/);
+  await runtime.ingestRaw({event:'Stop'});
   assert.equal(runtime.hasActiveTurn(),false);
+  const replay=runtime.turnEvents('turn-emit-fails',0);assert.deepEqual(replay.events.map(event=>event.type),['turn_started','segment_done','turn_done']);assert.equal(replay.finished,true);
 });

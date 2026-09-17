@@ -7,7 +7,7 @@ const css=await readFile(new URL('../public/style.css',import.meta.url),'utf8');
 const app=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
 
 test('mobile viewport remains zoomable while using the device width and safe area',()=>{
-  assert.match(html,/<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">/);
+  assert.match(html,/<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">/);
   assert.doesNotMatch(html,/user-scalable=no|maximum-scale|minimum-scale/);
   assert.match(css,/\.app\{position:fixed;[^}]*top:0;[^}]*height:var\(--vv-bottom,100dvh\)/);
   assert.match(css,/safe-area-inset-bottom/);

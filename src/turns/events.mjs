@@ -1,6 +1,8 @@
 export const turnEvent = {
   started: turnId => ({type:'turn_started', turnId, runtime:'api'}),
+  userImages: (turnId, images) => ({type:'user_images', turnId, images}),
   delta: (turnId, delta) => ({type:'segment_delta', turnId, delta}),
+  thoughtProcess: (turnId, snapshot) => ({type:'thought_process', turnId, ...snapshot}),
   segmentDone: turnId => ({type:'segment_done', turnId}),
   stopped: turnId => ({type:'turn_stopped', turnId}),
   error: (turnId, error) => ({type:'turn_error', turnId, error}),

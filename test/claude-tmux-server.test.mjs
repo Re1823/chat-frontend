@@ -28,6 +28,13 @@ test('server dispatches tmux chat, accepts protected hooks and streams NDJSON',a
     }
     const events=(await response.text()).trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.map(event=>event.type),['turn_started','segment_delta','segment_done','turn_done']);
+    assert.deepEqual(events.map(event=>event.seq),[1,2,3,4]);
+    const turnId=events[0].turnId;
+    const replay=await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=2`);assert.equal(replay.status,200);
+    const replayBody=await replay.json();assert.deepEqual(replayBody.events.map(event=>event.seq),[3,4]);assert.equal(replayBody.latestSeq,4);assert.equal(replayBody.finished,true);
+    assert.equal((await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=-1`)).status,400);
+    assert.equal((await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=0&extra=1`)).status,400);
+    assert.equal((await fetch(`${base}/api/chat/turn/unknown/events?afterSeq=0`)).status,404);
   }finally{await close(server)}
 });
 
@@ -60,5 +67,19 @@ test('send failure after streaming starts emits a structured terminal error',asy
     const events=(await response.text()).trim().split('\n').map(JSON.parse);
     assert.deepEqual(events.map(event=>event.type),['turn_started','turn_error']);
     assert.equal(events[1].error,'bridge send failed');
+  }finally{await close(server)}
+});
+
+test('request-id recovery resolves the accepted turn and duplicate POST never dispatches twice',async()=>{
+  const fixture=runtimeFixture();await fixture.runtime.initialize();
+  const server=createDwellServer({claudeRuntime:fixture.runtime,hookSecret:'secret'});const port=await listen(server),base=`http://127.0.0.1:${port}`,clientRequestId='60b72587-b4c6-4fc4-88fd-08a83caad994';
+  try{
+    assert.equal((await fetch(`${base}/api/chat/recovery/by-request/not-a-uuid`)).status,400);
+    const missing=await fetch(`${base}/api/chat/recovery/by-request/12345678-1234-4123-8123-123456789abc`);assert.equal(missing.status,404);assert.deepEqual(await missing.json(),{status:'NOT_FOUND'});
+    const first=fetch(`${base}/api/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:{runtime:'claude_tmux',runtimeId:'runtime-main'},messages:[{role:'user',content:'fixture'}],clientRequestId})});
+    while(fixture.prompts.length===0)await new Promise(resolve=>setTimeout(resolve,0));
+    const lookup=await (await fetch(`${base}/api/chat/recovery/by-request/${clientRequestId}`)).json();assert.equal(lookup.status,'FOUND');assert.equal(lookup.turnId,fixture.prompts[0].turnId);assert.equal('prompt' in lookup,false);assert.equal((await (await fetch(`${base}/api/chat/recovery/by-request/${clientRequestId}`)).json()).turnId,lookup.turnId);
+    const duplicate=await fetch(`${base}/api/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:{runtime:'claude_tmux',runtimeId:'runtime-main'},messages:[{role:'user',content:'fixture'}],clientRequestId})});assert.equal(duplicate.status,409);assert.equal(fixture.prompts.length,1);
+    await fixture.runtime.ingestRaw({event:'Stop'});await first;
   }finally{await close(server)}
 });

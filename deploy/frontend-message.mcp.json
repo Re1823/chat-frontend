@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "qiuqiu-frontend": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": ["/root/.local/lib/qiuqiu-frontend-message/launch-frontend-message-helper.py"],
+      "env": {
+        "QIUQIU_TIME_ANCHOR_INSTANCE_KEY": "${QIUQIU_TIME_ANCHOR_INSTANCE_KEY}",
+        "QIUQIU_TIME_ANCHOR_STATE_DIR": "/root/.local/state/qiuqiu-time-anchor"
+      }
+    }
+  }
+}

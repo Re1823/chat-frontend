@@ -1,5 +1,6 @@
 export function createBridgeActiveTurn(){
   let active=null;
+  const released=new Map();
   const requireMatch=turnId=>{
     if(!active||active.turnId!==turnId)throw Object.assign(new Error('active turn does not match'),{status:409});
     return active;
@@ -11,7 +12,14 @@ export function createBridgeActiveTurn(){
     },
     markSent(turnId,now=new Date().toISOString()){const turn=requireMatch(turnId);turn.phase='awaiting-stop';turn.sentAt=now;return turn},
     failBeforeSent(turnId){if(!active||active.turnId!==turnId||active.phase==='awaiting-stop')return false;active=null;return true},
-    complete(turnId){requireMatch(turnId);active=null},
+    complete(turnId){
+      if(released.has(turnId))return false;
+      requireMatch(turnId);active=null;
+      released.set(turnId,true);
+      if(released.size>256)released.delete(released.keys().next().value);
+      return true;
+    },
+    wasReleased(turnId){return released.has(turnId)},
     clear(){active=null},
     get(){return active},
     status(){return active?{active:true,activeTurnId:active.turnId,activePhase:active.phase,activeCreatedAt:active.createdAt,activeSentAt:active.sentAt}:{active:false,activeTurnId:null,activePhase:null,activeCreatedAt:null,activeSentAt:null}}
