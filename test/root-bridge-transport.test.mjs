@@ -43,6 +43,19 @@ test('transport gives send a dedicated five second client while status keeps the
   assert.deepEqual(timeouts,[1500,5000]);
 });
 
+test('thought snapshots use their dedicated client',async()=>{
+  const calls=[];
+  const transport=createRootBridgeTransport({request:async message=>({ok:true,running:message.op==='status'}),sendRequest:async()=>({ok:true}),thoughtRequest:async message=>{calls.push(message);return {ok:true,version:1,cursor:42,items:[]}}});
+  assert.deepEqual(await transport.thoughtSnapshot('turn-thought'),{ok:true,version:1,cursor:42,items:[]});
+  assert.deepEqual(calls,[{op:'thought_snapshot',turnId:'turn-thought'}]);
+});
+
+test('bridge response limit is configurable without weakening the default client',async()=>{
+  const payload=JSON.stringify({ok:true,value:'x'.repeat(70*1024)});
+  await assert.rejects(createRootBridgeClient({connect:()=>fakeConnection(payload)})({op:'status'}),/response too large/);
+  assert.equal((await createRootBridgeClient({connect:()=>fakeConnection(payload),maxResponseBytes:80*1024})({op:'thought_snapshot'})).value.length,70*1024);
+});
+
 test('send client accepts a delayed success before its five second deadline',async()=>{
   const connect=()=>{
     const socket=new EventEmitter();

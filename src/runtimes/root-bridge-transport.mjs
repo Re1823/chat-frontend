@@ -2,10 +2,11 @@ import net from 'node:net';
 
 export const ROOT_BRIDGE_SOCKET='/run/qiuqiu-claude-bridge/control.sock';
 const MAX_RESPONSE_BYTES=64*1024;
+const MAX_THOUGHT_RESPONSE_BYTES=256*1024;
 
 const bridgeError=(message,statusCode=502)=>Object.assign(new Error(message),{statusCode});
 
-export function createRootBridgeClient({connect=path=>net.createConnection({path}),timeoutMs=1500}={}){
+export function createRootBridgeClient({connect=path=>net.createConnection({path}),timeoutMs=1500,maxResponseBytes=MAX_RESPONSE_BYTES}={}){
   return message=>new Promise((resolve,reject)=>{
     const socket=connect(ROOT_BRIDGE_SOCKET);
     let response='',settled=false;
@@ -15,7 +16,7 @@ export function createRootBridgeClient({connect=path=>net.createConnection({path
     socket.once('connect',()=>socket.end(`${JSON.stringify(message)}\n`));
     socket.on('data',chunk=>{
       response+=chunk;
-      if(Buffer.byteLength(response,'utf8')>MAX_RESPONSE_BYTES)fail(bridgeError('root bridge response too large'));
+      if(Buffer.byteLength(response,'utf8')>maxResponseBytes)fail(bridgeError('root bridge response too large'));
     });
     socket.once('timeout',()=>fail(bridgeError('root bridge timeout',504)));
     socket.once('error',error=>fail(bridgeError(`root bridge unavailable: ${error.message}`,503)));
@@ -30,14 +31,14 @@ export function createRootBridgeClient({connect=path=>net.createConnection({path
   });
 }
 
-export function createRootBridgeTransport({request=createRootBridgeClient(),sendRequest=createRootBridgeClient({timeoutMs:5000})}={}){
+export function createRootBridgeTransport({request=createRootBridgeClient(),sendRequest=createRootBridgeClient({timeoutMs:5000}),thoughtRequest=createRootBridgeClient({timeoutMs:5000,maxResponseBytes:MAX_THOUGHT_RESPONSE_BYTES})}={}){
   const operationId=value=>{if(!/^[A-Za-z0-9_-]{16,128}$/.test(value||''))throw bridgeError('invalid carryover operation',400);return value};
   return {
     async hasSession(){return Boolean((await request({op:'status'})).running)},
     async inspectSession(){const status=await request({op:'status'});return {exists:Boolean(status.running),alive:Boolean(status.running),panes:[]}},
     async createSession(){const result=await request({op:'ensure'});return {created:Boolean(result.created)}},
     async sendPrompt({turnId,prompt}){await sendRequest({op:'send',turnId,prompt})},
-    async thoughtSnapshot(turnId){return request({op:'thought_snapshot',turnId})},
+    async thoughtSnapshot(turnId){return thoughtRequest({op:'thought_snapshot',turnId})},
     async interrupt(_sessionName,turnId){if(!turnId)throw bridgeError('turnId is required',400);return await request({op:'stop',turnId})},
     async complete(turnId){if(!turnId)throw bridgeError('turnId is required',400);await request({op:'complete',turnId})},
     async activateCarryover(id){return request({op:'activate_carryover',operationId:operationId(id)})},

@@ -17,8 +17,27 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
   const emittedSegmentDone=new Set();
   const statusError=state=>state==='missing'?'Claude Code tmux session 不存在':state==='exited'?'Claude Code 已退出':state==='unconfigured'?'Claude tmux runtime 尚未配置':'Claude tmux runtime 当前不可用';
   const emitSegmentDone=(turn,runtimeId)=>{if(emittedSegmentDone.has(turn.turnId))return;emittedSegmentDone.add(turn.turnId);turnStore.emit(runtimeId,turn.turnId,turnEvent.segmentDone(turn.turnId))};
-  const syncThoughts=async turn=>{if(!transport.thoughtSnapshot||!turnStore.matches(turn.runtimeId,turn.turnId))return;try{const snapshot=await transport.thoughtSnapshot(turn.turnId),signature=JSON.stringify(snapshot);if(thoughtPolls.get(turn.turnId)?.signature===signature)return;const state=thoughtPolls.get(turn.turnId)||{};state.signature=signature;thoughtPolls.set(turn.turnId,state);if(snapshot.items?.length||snapshot.suppressedTexts?.length)turnStore.emit(turn.runtimeId,turn.turnId,turnEvent.thoughtProcess(turn.turnId,snapshot))}catch{}};
-  const scheduleThoughts=turn=>{if(!transport.thoughtSnapshot)return;const state=thoughtPolls.get(turn.turnId)||{};thoughtPolls.set(turn.turnId,state);const tick=async()=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return;await syncThoughts(turn);state.timer=setTimeout(tick,350);state.timer.unref?.()};state.timer=setTimeout(tick,0);state.timer.unref?.()};
+  const thoughtState=turnId=>{let state=thoughtPolls.get(turnId);if(!state){state={signature:null,cursor:null,version:null,failures:0,lastErrorKey:null,lastErrorLogAt:0};thoughtPolls.set(turnId,state)}return state};
+  const thoughtErrorDetails=(error,stage,state)=>({pipelineStage:stage,errorClass:error?.constructor?.name||'Error',errorCode:String(error?.code||error?.statusCode||'UNKNOWN').slice(0,80),snapshotCursor:state?.cursor??null,snapshotVersion:state?.version??null});
+  const syncThoughts=async turn=>{
+    if(!transport.thoughtSnapshot||!turnStore.matches(turn.runtimeId,turn.turnId))return;
+    const state=thoughtState(turn.turnId);
+    let stage='transport';
+    try{
+      const snapshot=await transport.thoughtSnapshot(turn.turnId);stage='schema';
+      if(!snapshot||typeof snapshot!=='object'||!Array.isArray(snapshot.items))throw Object.assign(new TypeError('invalid thought snapshot schema'),{code:'INVALID_THOUGHT_SNAPSHOT'});
+      state.cursor=Number.isSafeInteger(snapshot.cursor)?snapshot.cursor:state.cursor;state.version=Number.isSafeInteger(snapshot.version)?snapshot.version:state.version;
+      const signature=JSON.stringify({items:snapshot.items,suppressOrdinaryBody:snapshot.suppressOrdinaryBody===true});
+      if(state.failures){record('thought_sync_recovered',turn.turnId,{pipelineStage:'transport',failureCount:state.failures,snapshotCursor:state.cursor,snapshotVersion:state.version});state.failures=0;state.lastErrorKey=null}
+      if(state.signature===signature)return;
+      state.signature=signature;
+      if(snapshot.items.length||snapshot.suppressedTexts?.length){stage='journal';turnStore.emit(turn.runtimeId,turn.turnId,turnEvent.thoughtProcess(turn.turnId,snapshot))}
+    }catch(error){
+      state.failures++;const details=thoughtErrorDetails(error,stage,state),key=`${details.pipelineStage}:${details.errorClass}:${details.errorCode}`,now=Date.now();
+      if(key!==state.lastErrorKey||now-state.lastErrorLogAt>=30000){record('thought_sync_error',turn.turnId,{...details,failureCount:state.failures});state.lastErrorKey=key;state.lastErrorLogAt=now}
+    }
+  };
+  const scheduleThoughts=turn=>{if(!transport.thoughtSnapshot)return;const state=thoughtState(turn.turnId);const tick=async()=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return;await syncThoughts(turn);state.timer=setTimeout(tick,350);state.timer.unref?.()};state.timer=setTimeout(tick,0);state.timer.unref?.()};
   const stopThoughts=async turn=>{const state=thoughtPolls.get(turn.turnId);if(state?.timer)clearTimeout(state.timer);await syncThoughts(turn);thoughtPolls.delete(turn.turnId)};
   const finalize=async(turn,event,{released=false}={})=>{
     if(!turnStore.matches(turn.runtimeId,turn.turnId))return;

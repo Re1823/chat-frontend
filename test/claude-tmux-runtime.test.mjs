@@ -85,3 +85,34 @@ test('terminal emit failure detaches transport while retaining the completed tur
   assert.equal(runtime.hasActiveTurn(),false);
   const replay=runtime.turnEvents('turn-emit-fails',0);assert.deepEqual(replay.events.map(event=>event.type),['turn_started','segment_done','turn_done']);assert.equal(replay.finished,true);
 });
+
+const waitFor=async check=>{for(let index=0;index<100;index++){if(check())return;await new Promise(resolve=>setTimeout(resolve,2))}throw new Error('condition not reached')};
+
+test('thought snapshot is journaled in order, incrementally replaced and recoverable after completion',async()=>{
+  const events=[],logs=[],record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};
+  let snapshot={version:1,cursor:10,items:[{id:'a',type:'thinking',text:'first',order:0}]};
+  const turnStore=createTurnStore(),runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport:{sendPrompt:async()=>{},thoughtSnapshot:async()=>snapshot,complete:async()=>{}},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore,ingress:createClaudeIngress(),log:value=>logs.push(value)});
+  await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'thought-turn',prompt:'fixture',emit:event=>events.push(event)});await waitFor(()=>events.some(event=>event.type==='thought_process'));
+  snapshot={version:1,cursor:20,items:[{id:'a',type:'thinking',text:'first extended',order:0},{id:'tool',type:'tool_call',toolName:'Read',displayName:'读取',inputSummary:'',status:'completed',order:1},{id:'b',type:'thinking',text:'second',order:2}]};
+  await waitFor(()=>events.filter(event=>event.type==='thought_process').length===2);await runtime.ingestRaw({event:'Stop'});
+  const replay=runtime.turnEvents('thought-turn',0),thoughts=replay.events.filter(event=>event.type==='thought_process');
+  assert.deepEqual(thoughts.map(event=>event.items.map(item=>item.id)),[['a'],['a','tool','b']]);
+  assert.deepEqual(replay.events.map(event=>event.seq),replay.events.map((_,index)=>index+1));
+  assert.equal(replay.events.at(-1).type,'turn_done');assert.equal(replay.finished,true);assert.equal(logs.some(entry=>entry.event==='thought_sync_error'),false);
+});
+
+test('thought polling failure is safely observable and a later poll retries successfully',async()=>{
+  const events=[],logs=[],record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};let calls=0;
+  const turnStore=createTurnStore(),runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport:{sendPrompt:async()=>{},thoughtSnapshot:async()=>{calls++;if(calls===1)throw Object.assign(new Error('private payload must not be logged'),{statusCode:504});return {version:1,cursor:30,items:[{id:'safe',type:'thinking',text:'private thought'}]}},complete:async()=>{}},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore,ingress:createClaudeIngress(),log:value=>logs.push(value)});
+  await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'retry-turn',prompt:'fixture',emit:event=>events.push(event)});await waitFor(()=>events.some(event=>event.type==='thought_process'));await runtime.ingestRaw({event:'Stop'});
+  const failure=logs.find(entry=>entry.event==='thought_sync_error'),recovery=logs.find(entry=>entry.event==='thought_sync_recovered');
+  assert.deepEqual({pipelineStage:failure.pipelineStage,errorClass:failure.errorClass,errorCode:failure.errorCode,turnId:failure.turnId},{pipelineStage:'transport',errorClass:'Error',errorCode:'504',turnId:'retry-turn'});
+  assert.equal(JSON.stringify(logs).includes('private payload must not be logged'),false);assert.equal(JSON.stringify(logs).includes('private thought'),false);assert.equal(recovery.failureCount,1);
+});
+
+test('turn without thought or tool items emits no thought cloud event',async()=>{
+  const events=[],record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};
+  const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport:{sendPrompt:async()=>{},thoughtSnapshot:async()=>({version:1,cursor:1,items:[]}),complete:async()=>{}},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore:createTurnStore(),ingress:createClaudeIngress(),log:()=>{}});
+  await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'plain-turn',prompt:'fixture',emit:event=>events.push(event)});await runtime.ingestRaw({event:'message_display',message_id:'m',index:0,delta:'ordinary final',final:true});await runtime.ingestRaw({event:'Stop'});
+  assert.equal(events.some(event=>event.type==='thought_process'),false);assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'ordinary final');
+});

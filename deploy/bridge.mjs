@@ -58,6 +58,7 @@ function sessionSettings() {
     allowedEnvVars: [HOOK_SECRET_ENV]
   };
   const currentSettings = {
+    alwaysThinkingEnabled: true,
     permissions: {
       defaultMode: 'dontAsk',
       allow: ['mcp__ombre-brain__*', 'mcp__qiuqiu-frontend__send_frontend_message'],
@@ -267,7 +268,7 @@ async function completeTurn(turnId) {
   void compactRotation.turnFinished().catch(error=>rscLog({event:'turn_finished_rotation_error',reason:String(error.message||error).slice(0,160)}));
 }
 
-async function thoughtSnapshot(turnId){if(!thoughtTurn||thoughtTurn.turnId!==turnId)throw Object.assign(new Error('thought turn does not match'),{status:409});const bytes=await readFile(thoughtTurn.path);const tail=bytes.subarray(Math.min(thoughtTurn.offset,bytes.length)).toString('utf8'),lines=tail.split(/\r?\n/).filter(Boolean),records=[];for(const line of lines){try{const value=JSON.parse(line);if(value.sessionId===thoughtTurn.sessionId||value.session_id===thoughtTurn.sessionId)records.push(value)}catch{}}return normalizeThoughtRecords(records)}
+async function thoughtSnapshot(turnId){if(!thoughtTurn||thoughtTurn.turnId!==turnId)throw Object.assign(new Error('thought turn does not match'),{status:409});const bytes=await readFile(thoughtTurn.path),cursor=bytes.length;const tail=bytes.subarray(Math.min(thoughtTurn.offset,cursor)).toString('utf8'),lines=tail.split(/\r?\n/).filter(Boolean),records=[];for(const line of lines){try{const value=JSON.parse(line);if(value.sessionId===thoughtTurn.sessionId||value.session_id===thoughtTurn.sessionId)records.push(value)}catch{}}return {version:1,cursor,...normalizeThoughtRecords(records)}}
 
 function exactFields(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
