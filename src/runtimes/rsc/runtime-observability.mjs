@@ -12,7 +12,7 @@ export function createRuntimeObservability({runtime,imageStore,coordinator}){
  if(!knownCount(images?.transitionalImageBindingCount)||images.transitionalImageBindingCount)blockers.push('IMAGE_BINDING_TRANSITION');
  if(!gate||gate.generation!==gate.handoffGeneration)blockers.push('GENERATION_MISMATCH');
  if(!frozen&&gate?.state!=='OPEN')blockers.push('SEND_GATE_NOT_OPEN');if(!frozen&&gate?.queueDepth!==0)blockers.push('SEND_GATE_QUEUE_NOT_EMPTY');
- if(gate?.handoffState!=='VALIDATED')blockers.push('HANDOFF_STATE');
+ if(!['VALIDATED','ACTIVE'].includes(gate?.handoffState))blockers.push('HANDOFF_STATE');
  return {observabilityReady:ready,runtimeActive:runtimeState?.runtimeActive,activeTurnId:runtimeState?.activeTurnId,unfinishedJournalCount:runtimeState?.unfinishedJournalCount,finalizationInProgress:runtimeState?.finalizationInProgress,recoveryInProgress:recoveries>0,recoveryCount:recoveries,transitionalImageBindingCount:images?.transitionalImageBindingCount,sendGateState:gate?.state,sendGateQueueDepth:gate?.queueDepth,sendGateOldestQueuedMs:gate?.oldestQueuedMs,sendGateGeneration:gate?.generation,handoffState:gate?.handoffState,handoffGeneration:gate?.generation,quiescent:blockers.length===0,blockers:[...new Set(blockers)]};
  };
  return {async reconcile(){ready=false;const initial=await snapshot();if(initial.runtimeActive===false&&initial.activeTurnId===null&&knownCount(initial.unfinishedJournalCount)&&initial.finalizationInProgress===false&&knownCount(initial.transitionalImageBindingCount))ready=true;return snapshot()},async snapshot(options){return snapshot(options)},async recovery(task){recoveries++;try{return await task()}finally{recoveries--}}};

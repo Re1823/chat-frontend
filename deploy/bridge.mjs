@@ -1,7 +1,7 @@
 import net from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile,readlink,writeFile,rename,chmod,stat } from 'node:fs/promises';
+import { mkdir,readFile,readlink,writeFile,rename,chmod,stat } from 'node:fs/promises';
 import {createBridgeStopController} from './bridge-stop.mjs';
 import { createBridgeActiveTurn } from './bridge-active-turn.mjs';
 import { mergeTimeAnchorSettings } from './time-anchor-integration.mjs';
@@ -11,6 +11,8 @@ import {detectWorkspaceTrustGate,classifyStartupScreen,handleManagedStartup} fro
 import {resolveOwnershipCandidates,captureAndRejectOwnership} from './rsc-shadow-ownership-forensics.mjs';
 import {atomicWriteRootRscState} from './rsc-state-file.mjs';
 import {normalizeThoughtRecords} from './thought-process.mjs';
+import {prepareShadowCarryover} from '../src/runtimes/rsc/phase2.mjs';
+import {createCompactRotationCoordinator,createTranscriptCompactReader} from '../src/runtimes/rsc/compact-rotation.mjs';
 
 const SOCKET_FD = 3;
 const ALLOWED_UID = 999;
@@ -26,6 +28,7 @@ const HOOK_SECRET_ENV = 'DWELL_CLAUDE_HOOK_SECRET';
 const TIME_ANCHOR_INSTANCE_ENV = 'QIUQIU_TIME_ANCHOR_INSTANCE_KEY';
 const TIME_ANCHOR_HOOK = '/root/.local/lib/time-anchor/user-prompt-submit.mjs';
 const RSC_STATE_FILE='/opt/qiuqiu/chat-frontend/data/rsc-production-state.json';
+const RSC_EVIDENCE_DIR='/root/.local/state/qiuqiu-rsc/evidence';
 const FRONTEND_MCP_CONFIG='/root/.config/qiuqiu/frontend-message.mcp.json';
 const STARTUP_DEBUG='/root/.local/state/qiuqiu-frontend-message-rollout/startup-debug.log';
 const MAX_REQUEST_BYTES = 300 * 1024;
@@ -155,14 +158,21 @@ async function loadRuntimeEnvironment() {
     PATH: '/root/.bun/bin:/usr/local/bin:/usr/bin:/bin',
     [HOOK_SECRET_ENV]: process.env[HOOK_SECRET_ENV],
     [TIME_ANCHOR_INSTANCE_ENV]: randomBytes(32).toString('hex'),
+    CLAUDE_CODE_NO_MODEL_FALLBACK: '1',
     ...values
   };
+}
+
+function sessionArgs(resumeSessionId=null){
+  const args=['--settings',sessionSettings(),'--model','claude-sonnet-4-6','--effort','high','--debug-file',STARTUP_DEBUG,'--mcp-config',FRONTEND_MCP_CONFIG];
+  if(resumeSessionId)args.push('--resume',resumeSessionId);
+  return args;
 }
 
 async function ensureSession() {
   if (await hasSession()) return { created: false };
   const env = await loadRuntimeEnvironment();
-  await run(TMUX, ['-S', TMUX_SOCKET, 'new-session', '-d', '-s', SESSION, '-c', WORKSPACE, CLAUDE, '--settings', sessionSettings()], { env });
+  await run(TMUX, ['-S', TMUX_SOCKET, 'new-session', '-d', '-s', SESSION, '-c', WORKSPACE, CLAUDE, ...sessionArgs()], { env });
   return { created: true };
 }
 const HELPER_SCRIPT='/root/.local/lib/qiuqiu-frontend-message/frontend-message-mcp.mjs';
@@ -175,7 +185,7 @@ async function helpersFor(pid){const children=(await run('/usr/bin/pgrep',['-P',
 async function absent(pid){return !(await processInfo(pid))}
 async function stopExactLifecycle(expectedSession){if(!await hasSession())return {claudeAbsent:true,helperAbsent:true,tmuxFree:true,runtimeOwnerCleared:!activeTurn.status().active};const pid=await panePid(),sessionId=await processSessionId();if(sessionId!==expectedSession)throw Object.assign(new Error('managed tmux owner changed'),{status:409});const helpers=await helpersFor(pid);await run(TMUX,['-S',TMUX_SOCKET,'send-keys','-t',SESSION,'-l','/exit']);await run(TMUX,['-S',TMUX_SOCKET,'send-keys','-t',SESSION,'Enter']);const stopped=await waitUntil(async()=>!await hasSession());if(!stopped)throw Object.assign(new Error('lifecycle exit timeout'),{status:504});let helperAbsent=await Promise.all(helpers.map(item=>absent(item.pid))).then(items=>items.every(Boolean));if(!helperAbsent){for(const helper of helpers){const current=await processInfo(helper.pid);if(current?.cmd.includes(HELPER_SCRIPT))process.kill(helper.pid,'SIGTERM')}helperAbsent=await waitUntil(async()=>await Promise.all(helpers.map(item=>absent(item.pid))).then(items=>items.every(Boolean)))}const result={claudeAbsent:await absent(pid),helperAbsent,tmuxFree:!await hasSession(),runtimeOwnerCleared:!activeTurn.status().active};if(!lifecycleFree(result))throw Object.assign(new Error('lifecycle ownership was not released'),{status:504});return result}
 async function stopProduction(op){const pid=await panePid(),helpers=await helpersFor(pid),result=await stopExactLifecycle(op.sourceSessionId);return {...result,sourceStopped:true,oldClaudePid:pid,oldHelperPids:helpers.map(item=>item.pid)}}
-async function startExact(sessionId){if(await hasSession())throw Object.assign(new Error('runtime session already exists'),{status:409});const env=await loadRuntimeEnvironment();await run(TMUX,['-S',TMUX_SOCKET,'new-session','-d','-s',SESSION,'-c',WORKSPACE,CLAUDE,'--settings',sessionSettings(),'--resume',sessionId,'--model','claude-sonnet-4-6','--debug-file',STARTUP_DEBUG,'--mcp-config',FRONTEND_MCP_CONFIG],{env:{...env,CLAUDE_CODE_NO_MODEL_FALLBACK:'1'}});return {startedAt:Date.now()}}
+async function startExact(sessionId){if(await hasSession())throw Object.assign(new Error('runtime session already exists'),{status:409});const env=await loadRuntimeEnvironment();await run(TMUX,['-S',TMUX_SOCKET,'new-session','-d','-s',SESSION,'-c',WORKSPACE,CLAUDE,...sessionArgs(sessionId)],{env});return {startedAt:Date.now()}}
 function settingsEvidence(raw){try{const value=JSON.parse(raw);const deny=value.permissions?.deny||[],hooks=value.hooks||{};return {permissionsIntact:['Bash','Write','Edit','NotebookEdit','Agent'].every(item=>deny.includes(item)),hooksIntact:['UserPromptSubmit','MessageDisplay','Stop','StopFailure'].every(item=>Array.isArray(hooks[item])&&hooks[item].length)}}catch{return {permissionsIntact:false,hooksIntact:false}}}
 async function transcriptEvidence(sessionId){try{const text=await readFile(`${TRANSCRIPT_DIR}/${sessionId}.jsonl`,'utf8');return text.length>0&&text.split(/\r?\n/).filter(Boolean).every(line=>{try{JSON.parse(line);return true}catch{return false}})}catch{return false}}
 async function transcriptStartupCounts(sessionId){try{const lines=(await readFile(`${TRANSCRIPT_DIR}/${sessionId}.jsonl`,'utf8')).split(/\r?\n/).filter(Boolean).map(JSON.parse),counts={user:0,assistant:0,mcp:0,compact:false,parseable:true,transcriptWritable:true,resumeHistoryInitialized:false,resumeMetadataInitialized:false,modeObserved:false,permissionModeObserved:false,resumeMilestone:false,wrongSessionRecord:false,startupStructureValid:true,orphanStartupRecord:false};let historyAt=-1,modeAt=-1,permissionAt=-1,metadataAt=-1,previousUuid=null,chainValid=true;for(let index=0;index<lines.length;index++){const row=lines[index];if(row.type==='user'||row.type==='assistant'){counts[row.type]++;if(typeof row.uuid!=='string'||(previousUuid!==null&&row.parentUuid!==previousUuid))chainValid=false;previousUuid=row.uuid||previousUuid}if(row.subtype==='compact_boundary'||row.isCompactSummary)counts.compact=true;const content=row.message?.content;if(Array.isArray(content))counts.mcp+=content.filter(item=>item?.type==='tool_use').length;if(row.type==='file-history-snapshot')historyAt=index;if(['atis-latch','mode','permission-mode'].includes(row.type)){if(row.sessionId!==sessionId)counts.wrongSessionRecord=true;else if(metadataAt<0)metadataAt=index}if(row.type==='mode'&&row.sessionId===sessionId)modeAt=index;if(row.type==='permission-mode'&&row.sessionId===sessionId)permissionAt=index}counts.resumeHistoryInitialized=historyAt>=0;counts.resumeMetadataInitialized=metadataAt>=0&&chainValid&&!counts.wrongSessionRecord;counts.modeObserved=modeAt>=0;counts.permissionModeObserved=permissionAt>=0;counts.resumeMilestone=counts.resumeMetadataInitialized&&counts.modeObserved&&counts.permissionModeObserved;counts.orphanStartupRecord=!chainValid;counts.startupStructureValid=chainValid&&!counts.wrongSessionRecord;return counts}catch{return {user:0,assistant:0,mcp:0,compact:false,parseable:false,transcriptWritable:false,resumeHistoryInitialized:false,resumeMetadataInitialized:false,modeObserved:false,permissionModeObserved:false,resumeMilestone:false,wrongSessionRecord:false,startupStructureValid:false,orphanStartupRecord:false}}}
@@ -187,8 +197,41 @@ async function inspectStarted(operation){if(!await hasSession())return {claudeAl
  await handleManagedStartup({context:{executable:info?.cmd[0],version,managedOperation:true,targetSessionId:sessionId,expectedTargetSessionId:operation.targetSessionId,uid:info?.uid,home:info?.env.find(v=>v.startsWith('HOME='))?.slice(5),canonicalCwd:info?.cwd,displayedWorkspace:trust.workspace,unexpectedClaudeOwner:!initialOwners.valid,unexpectedHelperOwner:allBefore.some(item=>item.ppid!==pid)},controller:startupController});
  pid=await panePid();await waitUntil(async()=>((await helpersFor(pid)).length===1)&&await transcriptEvidence(operation.targetSessionId));info=await processInfo(pid);sessionId=await processSessionId();screen=await run(TMUX,['-S',TMUX_SOCKET,'capture-pane','-p','-t',SESSION]).then(r=>r.stdout).catch(()=> '');trust=detectWorkspaceTrustGate(screen);
  }
- await waitUntil(async()=>((await helpersFor(pid)).length===1)&&await transcriptEvidence(operation.targetSessionId));const helpers=await helpersFor(pid),all=await allHelpers(),sessions=(await run(TMUX,['-S',TMUX_SOCKET,'list-sessions','-F','#{session_name}']).catch(()=>({stdout:''}))).stdout.trim().split(/\r?\n/).filter(Boolean),settings=settingsEvidence(info?.cmd[info.cmd.indexOf('--settings')+1]),semantic=classifyStartupScreen(screen),onboarding=['OAUTH','LOGIN','THEME','PERMISSION_MODE','PERMISSION','MCP_GATE','RESUME_CONFIRMATION'].includes(semantic.kind)||(semantic.kind==='UNKNOWN'&&semantic.interactive===true),obConfigured=await loadRuntimeEnvironment().then(()=>true).catch(()=>false);const value={claudeAlive:Boolean(info),claudePid:pid,resumedSessionId:sessionId,workspaceRoot:info?.cwd===WORKSPACE,tmuxIdentity:sessions.length===1&&sessions[0]===SESSION,singleManagedClaude:sessions.length===1&&sessions[0]===SESSION,helperAlive:helpers.length===1,helperPid:helpers[0]?.pid||null,helperParentMatches:helpers.length===1,oldHelperAbsent:all.length===1&&all[0]?.pid===helpers[0]?.pid,helperIdentityMatches:helpers.length===1&&helpers[0].cmd.includes(HELPER_SCRIPT),runtimeConnected:await hasSession(),active:activeTurn.status().active,activeTurnId:activeTurn.status().activeTurnId,frontendMcpConnected:helpers.length===1,obConfigured,modelExact:info?.cmd.includes('claude-sonnet-4-6')===true,noModelFallback:info?.env.includes('CLAUDE_CODE_NO_MODEL_FALLBACK=1')===true,transcriptParseable:await transcriptEvidence(operation.targetSessionId),...settings,claudeMdAvailable:await readFile('/root/CLAUDE.md','utf8').then(()=>true).catch(()=>false),onboardingDetected:onboarding,startupError:/\b(error|fatal)\b/i.test(screen),autoCompacted:/\bcompact(?:ing|ed)?\b/i.test(screen),emptySessionFallback:sessionId!==operation.targetSessionId};return {...value,ready:targetReadyEvidence(value,operation.targetSessionId)}}
+ await waitUntil(async()=>((await helpersFor(pid)).length===1)&&await transcriptEvidence(operation.targetSessionId));const helpers=await helpersFor(pid),all=await allHelpers(),sessions=(await run(TMUX,['-S',TMUX_SOCKET,'list-sessions','-F','#{session_name}']).catch(()=>({stdout:''}))).stdout.trim().split(/\r?\n/).filter(Boolean),settings=settingsEvidence(info?.cmd[info.cmd.indexOf('--settings')+1]),semantic=classifyStartupScreen(screen),onboarding=['OAUTH','LOGIN','THEME','PERMISSION_MODE','PERMISSION','MCP_GATE','RESUME_CONFIRMATION'].includes(semantic.kind)||(semantic.kind==='UNKNOWN'&&semantic.interactive===true),obConfigured=await loadRuntimeEnvironment().then(()=>true).catch(()=>false);const value={claudeAlive:Boolean(info),claudePid:pid,resumedSessionId:sessionId,workspaceRoot:info?.cwd===WORKSPACE,tmuxIdentity:sessions.length===1&&sessions[0]===SESSION,singleManagedClaude:sessions.length===1&&sessions[0]===SESSION,helperAlive:helpers.length===1,helperPid:helpers[0]?.pid||null,helperParentMatches:helpers.length===1,oldHelperAbsent:all.length===1&&all[0]?.pid===helpers[0]?.pid,helperIdentityMatches:helpers.length===1&&helpers[0].cmd.includes(HELPER_SCRIPT),runtimeConnected:await hasSession(),active:activeTurn.status().active,activeTurnId:activeTurn.status().activeTurnId,frontendMcpConnected:helpers.length===1,obConfigured,modelExact:info?.cmd.includes('claude-sonnet-4-6')===true,effortHigh:info?.cmd.includes('--effort')===true&&info?.cmd[info.cmd.indexOf('--effort')+1]==='high',noModelFallback:info?.env.includes('CLAUDE_CODE_NO_MODEL_FALLBACK=1')===true,transcriptParseable:await transcriptEvidence(operation.targetSessionId),...settings,claudeMdAvailable:await readFile('/root/CLAUDE.md','utf8').then(()=>true).catch(()=>false),onboardingDetected:onboarding,startupError:/\b(error|fatal)\b/i.test(screen),autoCompacted:/\bcompact(?:ing|ed)?\b/i.test(screen),emptySessionFallback:sessionId!==operation.targetSessionId};return {...value,ready:targetReadyEvidence(value,operation.targetSessionId)}}
 const rscHandoff=createRscBridgeHandoff({loadOperation:async id=>{const state=JSON.parse(await readFile(RSC_STATE_FILE,'utf8'));if(state.operationId!==id||state.operationGeneration!==state.handoffGeneration)throw Object.assign(new Error('generation mismatch'),{status:409});return state},productionSession:processSessionId,stopOld:stopProduction,startTarget:op=>startExact(op.targetSessionId),inspectTarget:inspectStarted,resumeLastGood:async(op,{afterTargetFailure=false}={})=>{if(afterTargetFailure){const cleanup=await stopExactLifecycle(op.targetSessionId);if(!lifecycleFree(cleanup))throw Object.assign(new Error('target cleanup barrier failed'),{status:504})}await startExact(op.lastGoodSessionId);const ready=await inspectStarted({...op,targetSessionId:op.lastGoodSessionId});return {sourceReady:ready.ready,...ready}}});
+const loadRscState=async()=>JSON.parse(await readFile(RSC_STATE_FILE,'utf8'));
+const saveRscState=value=>atomicWriteRootRscState(RSC_STATE_FILE,value);
+const rscLog=value=>console.info(JSON.stringify({time:new Date().toISOString(),component:'rsc_compact',...value}));
+async function rotateForCompact(pending,observedState){
+  if(activeTurn.status().active)throw Object.assign(new Error('rotation attempted during active turn'),{status:409});
+  const sourceSessionId=observedState.currentProductionSessionId,generation=observedState.handoffGeneration+1,operationId=`rscop_generation_${String(generation).padStart(4,'0')}`;
+  let state={...observedState,handoffState:'PREPARING',handoffGeneration:generation,operationGeneration:generation,operationId,candidateActiveSessionId:null,candidateSourceSessionId:sourceSessionId,updatedAt:new Date().toISOString()};
+  await saveRscState(state);
+  try{
+    await mkdir(RSC_EVIDENCE_DIR,{recursive:true,mode:0o700});
+    const prepared=await prepareShadowCarryover({projectDir:TRANSCRIPT_DIR,sourceSessionId,evidenceDir:RSC_EVIDENCE_DIR});
+    state=await loadRscState();
+    if(state.pendingRotation?.compactId!==pending.compactId||state.currentProductionSessionId!==sourceSessionId||activeTurn.status().active)throw Object.assign(new Error('rotation ownership changed during prepare'),{status:409});
+    state={...state,preparedTargetSessionId:prepared.targetSessionId,preparedTargetEvidence:'PREPARED',handoffState:'ACTIVATING',updatedAt:new Date().toISOString()};
+    await saveRscState(state);
+    const activated=await rscHandoff.activate(operationId);
+    if(!targetReadyEvidence(activated.ready,prepared.targetSessionId)){
+      await rscHandoff.rollback(operationId);
+      throw Object.assign(new Error('target readiness failed'),{status:503});
+    }
+    const completedAt=new Date().toISOString();
+    const next={...await loadRscState(),handoffState:'CANDIDATE_ACTIVE',candidateActiveSessionId:prepared.targetSessionId,candidateSourceSessionId:sourceSessionId,pendingRotation:null,lastConsumedCompact:{...pending,consumedAt:completedAt,generation},lastRotationFailure:null,updatedAt:completedAt};
+    await saveRscState(next);rscLog({event:'rotation_candidate_active',sourceSessionId,targetSessionId:prepared.targetSessionId,generation,compactId:pending.compactId});
+    return {status:'CANDIDATE_ACTIVE',sourceSessionId,targetSessionId:prepared.targetSessionId,generation};
+  }catch(error){
+    const latest=await loadRscState().catch(()=>state);let actual=null;try{actual=await processSessionId()}catch{}
+    const safeState=actual===sourceSessionId?'ACTIVE':'FAILED_SAFE',failedAt=new Date().toISOString();
+    await saveRscState({...latest,currentProductionSessionId:sourceSessionId,lastGoodSessionId:sourceSessionId,handoffState:safeState,pendingRotation:{...pending,deferUntilTurnFinished:true},lastRotationFailure:{compactId:pending.compactId,failedAt,reason:String(error.message||'ROTATION_FAILED').slice(0,160)},updatedAt:failedAt});
+    rscLog({event:'rotation_failed',compactId:pending.compactId,sessionId:sourceSessionId,state:safeState,reason:String(error.message||'ROTATION_FAILED').slice(0,160)});throw error;
+  }
+}
+const latestCompact=createTranscriptCompactReader({projectDir:TRANSCRIPT_DIR});
+const compactRotation=createCompactRotationCoordinator({loadState:loadRscState,saveState:saveRscState,latestCompact,isActive:()=>activeTurn.status().active,rotate:rotateForCompact,log:rscLog});
 
 async function sendPrompt(turnId, prompt) {
   if (!await hasSession()) throw Object.assign(new Error('runtime session is not running'), { status: 409 });
@@ -221,6 +264,7 @@ async function completeTurn(turnId) {
   lifecycleLog('complete',turnId);
   await commitCandidateAfterRealTurn();
   if(thoughtTurn?.turnId===turnId)thoughtTurn=null;
+  void compactRotation.turnFinished().catch(error=>rscLog({event:'turn_finished_rotation_error',reason:String(error.message||error).slice(0,160)}));
 }
 
 async function thoughtSnapshot(turnId){if(!thoughtTurn||thoughtTurn.turnId!==turnId)throw Object.assign(new Error('thought turn does not match'),{status:409});const bytes=await readFile(thoughtTurn.path);const tail=bytes.subarray(Math.min(thoughtTurn.offset,bytes.length)).toString('utf8'),lines=tail.split(/\r?\n/).filter(Boolean),records=[];for(const line of lines){try{const value=JSON.parse(line);if(value.sessionId===thoughtTurn.sessionId||value.session_id===thoughtTurn.sessionId)records.push(value)}catch{}}return normalizeThoughtRecords(records)}
@@ -331,4 +375,8 @@ server.on('error', error => {
   process.exitCode = 1;
 });
 
-server.listen({ fd: SOCKET_FD });
+server.listen({ fd: SOCKET_FD },()=>{
+  void compactRotation.reconcile().catch(error=>rscLog({event:'reconciliation_failed',reason:String(error.message||error).slice(0,160)}));
+  const observer=setInterval(()=>void compactRotation.observe().catch(error=>rscLog({event:'observer_failed',reason:String(error.message||error).slice(0,160)})),1000);
+  observer.unref?.();
+});

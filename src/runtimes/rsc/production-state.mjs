@@ -1,5 +1,5 @@
 import {mkdir,open,readFile,rename,rm,chmod} from 'node:fs/promises';import {dirname,join} from 'node:path';
-const QUEUE_STATES=new Set(['ACTIVATING','STARTING_TARGET','TARGET_READY','COMMITTING','RECOVER_LAST_GOOD']);
+const QUEUE_STATES=new Set(['PREPARING','ACTIVATING','STARTING_TARGET','TARGET_READY','COMMITTING','RECOVER_LAST_GOOD']);
 const id=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export function validateProductionRscState(value){if(!value||!id.test(value.currentProductionSessionId||'')||!id.test(value.lastGoodSessionId||'')||!id.test(value.preparedTargetSessionId||'')||!['VALIDATED','CANDIDATE_ACTIVE','ACTIVE','FAILED_SAFE',...QUEUE_STATES].includes(value.handoffState)||!Number.isSafeInteger(value.handoffGeneration)||value.handoffGeneration<1)throw new Error('INVALID_RSC_PRODUCTION_STATE');return value}
 export function shouldQueueRscSend(state){return QUEUE_STATES.has(state.handoffState)}

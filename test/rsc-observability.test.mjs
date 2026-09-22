@@ -22,4 +22,5 @@ test('22 gate snapshot hides request content',async()=>{const o=fixture();await 
 test('28 frozen recovery rejects',async()=>{const o=fixture();await o.reconcile();await o.recovery(async()=>assert.equal((await o.snapshot({frozen:true})).quiescent,false))});
 test('32 unified snapshot is consumable',async()=>{const o=fixture();await o.reconcile();assert.equal((await o.snapshot()).quiescent,true)});
 test('33 blocked snapshot does not invoke lifecycle',async()=>{let stopped=false;const o=fixture({runtime:{runtimeActive:true}});await o.reconcile();assert.equal((await o.snapshot()).quiescent,false);assert.equal(stopped,false)});
+test('ACTIVE generation remains eligible for later compact rotation',async()=>{const o=fixture({gate:{handoffState:'ACTIVE'}});await o.reconcile();assert.equal((await o.snapshot()).quiescent,true)});
 test('34 no public observability endpoint is created',async()=>{const {createDwellServer}=await import('../server.mjs');const s=createDwellServer({});await new Promise(r=>s.listen(0,'127.0.0.1',r));try{assert.equal((await fetch(`http://127.0.0.1:${s.address().port}/api/rsc/status`)).status,404)}finally{s.close()}});

@@ -29,3 +29,10 @@ test('all production and RSC starts share the same MCP config path',async()=>{
   assert.match(bridge,/--mcp-config',FRONTEND_MCP_CONFIG/);
   assert.match(shadow,/--mcp-config',mcpConfigPath/);
 });
+
+test('all future production starts pin Sonnet 4.6 high effort with fallback disabled',async()=>{
+  const bridge=await readFile(new URL('../deploy/bridge.mjs',import.meta.url),'utf8');
+  assert.match(bridge,/--model','claude-sonnet-4-6','--effort','high'/);
+  assert.match(bridge,/CLAUDE_CODE_NO_MODEL_FALLBACK: '1'/);
+  assert.match(bridge,/\.\.\.sessionArgs\(sessionId\)/);
+});
