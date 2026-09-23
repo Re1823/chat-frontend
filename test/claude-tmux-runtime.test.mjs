@@ -12,16 +12,16 @@ function fixture({state='connected',stopTimeoutMs=20}={}){
   return {runtime,prompts,interrupts,completions};
 }
 
-test('runtime maps canonical ordered frames to existing turn events',async()=>{
+test('runtime keeps ordinary MessageDisplay frames internal while preserving completion',async()=>{
   const {runtime,prompts,completions}=fixture();const events=[];await runtime.initialize();
   await runtime.chat({runtimeId:'runtime-main',turnId:'turn-1',prompt:'only new prompt',emit:event=>events.push(event)});
   assert.equal(prompts[0].prompt,'only new prompt');
-  await runtime.ingestRaw({event:'message_display',message_id:'m',index:1,delta:'B'});
-  await runtime.ingestRaw({event:'message_display',message_id:'m',index:0,delta:'A'});
-  await runtime.ingestRaw({event:'message_display',message_id:'m',index:2,delta:'C',final:true});
+  assert.deepEqual(await runtime.ingestRaw({event:'message_display',message_id:'m',index:1,delta:'B'}),{accepted:true,reason:'internal_only'});
+  assert.deepEqual(await runtime.ingestRaw({event:'message_display',message_id:'m',index:0,delta:'A'}),{accepted:true,reason:'internal_only'});
+  assert.deepEqual(await runtime.ingestRaw({event:'message_display',message_id:'m',index:2,delta:'C',final:true}),{accepted:true,reason:'internal_only'});
   await runtime.ingestRaw({event:'Stop'});
-  assert.deepEqual(events.map(event=>event.type),['turn_started','segment_delta','segment_delta','segment_delta','segment_done','turn_done']);
-  assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'ABC');
+  assert.deepEqual(events.map(event=>event.type),['turn_started','segment_done','turn_done']);
+  assert.equal(events.some(event=>event.type==='segment_delta'),false);
   assert.deepEqual(completions,['turn-1']);
 });
 
@@ -48,7 +48,7 @@ test('runtime serializes concurrent raw hook adaptation before applying frames',
   await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'t',prompt:'x',emit:event=>events.push(event)});
   const first=runtime.ingestRaw({order:1});const second=runtime.ingestRaw({order:2});await new Promise(resolve=>setTimeout(resolve,1));
   assert.equal(calls,1);release();await Promise.all([first,second]);
-  assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'12');
+  assert.equal(events.some(event=>event.type==='segment_delta'),false);assert.equal(calls,2);
 });
 
 test('disabled runtime never auto-creates a missing session',async()=>{
@@ -114,5 +114,5 @@ test('turn without thought or tool items emits no thought cloud event',async()=>
   const events=[],record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport:{sendPrompt:async()=>{},thoughtSnapshot:async()=>({version:1,cursor:1,items:[]}),complete:async()=>{}},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore:createTurnStore(),ingress:createClaudeIngress(),log:()=>{}});
   await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'plain-turn',prompt:'fixture',emit:event=>events.push(event)});await runtime.ingestRaw({event:'message_display',message_id:'m',index:0,delta:'ordinary final',final:true});await runtime.ingestRaw({event:'Stop'});
-  assert.equal(events.some(event=>event.type==='thought_process'),false);assert.equal(events.filter(event=>event.type==='segment_delta').map(event=>event.delta).join(''),'ordinary final');
+  assert.equal(events.some(event=>event.type==='thought_process'),false);assert.equal(events.some(event=>event.type==='segment_delta'),false);
 });

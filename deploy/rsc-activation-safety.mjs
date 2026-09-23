@@ -1,6 +1,6 @@
 // Shared by the production bridge and tests. Missing evidence is never PASS.
 const requiredFalse=['active','startupError','autoCompacted','emptySessionFallback','onboardingDetected'];
-const requiredTrue=['claudeAlive','workspaceRoot','tmuxIdentity','singleManagedClaude','helperAlive','helperParentMatches','oldHelperAbsent','helperIdentityMatches','runtimeConnected','frontendMcpConnected','modelExact','effortHigh','noModelFallback','transcriptParseable','permissionsIntact','hooksIntact','claudeMdAvailable'];
+const requiredTrue=['claudeAlive','workspaceRoot','projectDirectoryAdded','tmuxIdentity','singleManagedClaude','helperAlive','helperParentMatches','oldHelperAbsent','helperIdentityMatches','runtimeConnected','frontendMcpConnected','modelExact','effortHigh','noModelFallback','transcriptParseable','permissionsIntact','hooksIntact','claudeMdAvailable'];
 
 export function targetReadyEvidence(value,targetSessionId){
  if(!value||value.resumedSessionId!==targetSessionId||value.active!==false||value.activeTurnId!==null)return false;

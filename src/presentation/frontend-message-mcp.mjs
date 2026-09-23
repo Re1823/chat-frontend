@@ -11,7 +11,7 @@ export function validateFrontendDeliverySecret(value){
 
 export const frontendMessageTool = {
   name: 'send_frontend_message',
-  description: '在秋秋 frontend 中主动向小霏发送一条独立消息；每次成功调用立即发送一条。是否调用、发几条、是否再补一句都由你决定，一句就够时只发一句。已通过本工具发送的正文不要再重复作为最终普通回复；真正新的补充仍可正常回复。仅当前 active frontend turn 可用。失败不会自动重试；投递结果不确定时不要盲目重复发送。',
+  description: '向当前秋秋 frontend turn 发送一条用户可见消息。所有面向用户的回复都必须通过本工具发送；terminal 中的普通 assistant 文字仅供内部过程使用，不会进入聊天框。每次成功调用产生一颗独立气泡，可以连续调用发送多颗；不要把最终回答只留在 terminal。仅当前 active frontend turn 可用。失败不会自动重试；投递结果不确定时不要盲目重复发送。',
   inputSchema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 16384 } }, required: ['text'], additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
 };

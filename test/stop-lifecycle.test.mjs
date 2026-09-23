@@ -34,8 +34,8 @@ test('D: late Stop/StopFailure after release are ignored, tagged stale hooks can
 test('E: unknown turnId or runtimeId remains an error with no Escape',async()=>{
   const f=fixture();await f.start();await assert.rejects(f.halt('wrong'),e=>e.statusCode===409);await assert.rejects(f.stop.stop('wrong'),e=>e.status===409);await assert.rejects(f.runtime.stop({runtimeId:'wrong',turnId:'test-turn'}),e=>e.statusCode===409);assert.equal(f.escapes(),0);assert.equal(f.state.get().turnId,'test-turn');
 });
-test('F: MessageDisplay and normal Stop still emit the established normal completion sequence',async()=>{
-  const f=fixture();await f.start();await f.runtime.ingestRaw({event:'MessageDisplay',message_id:'m',index:0,delta:'mock reply',final:true});await f.runtime.ingestRaw({event:'Stop'});inactive(f);assert.equal(f.escapes(),0);assert.deepEqual(f.events.map(e=>e.type),['turn_started','segment_delta','segment_done','turn_done']);
+test('F: MessageDisplay stays internal and normal Stop still completes the turn',async()=>{
+  const f=fixture();await f.start();await f.runtime.ingestRaw({event:'MessageDisplay',message_id:'m',index:0,delta:'mock reply',final:true});await f.runtime.ingestRaw({event:'Stop'});inactive(f);assert.equal(f.escapes(),0);assert.deepEqual(f.events.map(e=>e.type),['turn_started','segment_done','turn_done']);
 });
 test('failed Escape never claims release or clears the bridge active turn',async()=>{
   const state=createBridgeActiveTurn();state.reserve('t');state.markSent('t');const stop=createBridgeStopController({state,sendEscape:async()=>{throw new Error('failed')}});await assert.rejects(stop.stop('t'),/failed/);assert.equal(state.get().turnId,'t');assert.equal(stop.isPending(),false);
@@ -56,7 +56,7 @@ test('network G: detached stream keeps ownership until Stop/complete, then readb
  const f=fixture(),abort=new AbortController();await f.start('detached',abort.signal);abort.abort();
  assert.equal(f.runtime.turnStatus('detached').receivedByRuntime,true);assert.equal(f.runtime.turnStatus('detached').detached,true);assert.equal(f.runtime.hasActiveTurn(),true);
  await f.runtime.ingestRaw({event:'MessageDisplay',message_id:'m',index:0,delta:'private mock body',final:true});await f.runtime.ingestRaw({event:'Stop'});inactive(f);
- const status=f.runtime.turnStatus('detached');assert.equal(status.finished,true);assert.equal(status.hasOutput,true);assert.equal(status.active,false);assert.ok(!JSON.stringify(status).includes('private mock body'));
+ const status=f.runtime.turnStatus('detached');assert.equal(status.finished,true);assert.equal(status.hasOutput,false);assert.equal(status.active,false);assert.ok(!JSON.stringify(status).includes('private mock body'));
 });
 
 test('network D: disconnect after turn_started but before send records not_delivered',async()=>{

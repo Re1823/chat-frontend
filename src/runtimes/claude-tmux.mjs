@@ -57,11 +57,8 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
     if(raw.turnId&&raw.turnId!==turn.turnId){record('stale_hook_ignored',raw.turnId);return {accepted:false,reason:'turn_mismatch'}};
     const frame=await ingress.adapt(raw,{runtimeId:turn.runtimeId});if(!frame)return {accepted:false,reason:'ignored'};
     if(frame.kind==='assistant_frame'){
-      for(const item of frames.push(frame)){
-        if(item.kind==='assistant_frame'){if(!turnStore.status?.(turn.turnId)?.hasOutput)record('first_output',turn.turnId);turnStore.emit(turn.runtimeId,turn.turnId,turnEvent.delta(turn.turnId,item.text))}
-        if(item.kind==='message_final')emitSegmentDone(turn,turn.runtimeId);
-      }
-      return {accepted:true};
+      record('ordinary_assistant_internal',turn.turnId,{source:'MessageDisplay'});
+      return {accepted:true,reason:'internal_only'};
     }
     if(frame.kind==='turn_error'||(frame.kind==='turn_stop'&&frame.outcome==='failed')){
       emitSegmentDone(turn,turn.runtimeId);

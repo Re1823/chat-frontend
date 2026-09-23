@@ -77,7 +77,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
 test('thought process event stays out of ordinary assistant body and shows a turn-bound cloud',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a',createdAt:1};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-a',items:[{id:'i',type:'thinking',text:'reason'}]});assert.equal(out.content,'final');const html=api.renderChatMessage(out,null);assert.match(html,/data-thought-turn="turn-a"/);assert.doesNotMatch(html,/reason/)});
 test('assistant without thought process has no cloud button',()=>{const {api}=loadApp();assert.doesNotMatch(api.renderChatMessage({role:'assistant',content:'final',turnId:'turn-a',createdAt:1},null),/thought-cloud/)});
 test('legacy suppression flag cannot erase real final assistant text',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a'};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-a',items:[{id:'i',type:'thinking',text:'reason'}],suppressOrdinaryBody:true});assert.equal(out.content,'final');assert.equal(out.thoughtProcess.items.length,1)});
-test('GET-only legacy recovery restores journaled final text without a POST',async()=>{const sessions=[{id:'s',provider:'claude',messages:[{role:'assistant',content:'',turnId:'turn-a',thoughtProcess:{items:[{type:'thinking'}]}}]}],calls=[];const {api}=loadApp({'dwell.sessions':JSON.stringify(sessions),'dwell.active':'s'},async(url,init)=>{calls.push([url,init]);return new Response(JSON.stringify({events:[{type:'segment_delta',delta:'one'},{type:'segment_delta',delta:' two'},{type:'turn_done'}]}),{status:200,headers:{'content-type':'application/json'}})});assert.equal(await api.recoverLegacySuppressedFinals(),true);assert.equal(api.getState().sessions[0].messages[0].content,'one two');assert.deepEqual(calls.map(([,init])=>init?.method||'GET'),['GET','GET'])});
+test('legacy segment recovery cannot reintroduce terminal-only assistant text',async()=>{const sessions=[{id:'s',provider:'claude',messages:[{role:'assistant',content:'',turnId:'turn-a',thoughtProcess:{items:[{type:'thinking'}]}}]}],calls=[];const {api}=loadApp({'dwell.sessions':JSON.stringify(sessions),'dwell.active':'s'},async(url,init)=>{calls.push([url,init]);return new Response(JSON.stringify({events:[{type:'segment_delta',delta:'terminal only'},{type:'turn_done'}]}),{status:200,headers:{'content-type':'application/json'}})});assert.equal(await api.recoverLegacySuppressedFinals(),false);assert.equal(api.getState().sessions[0].messages[0].content,'');assert.equal(calls.length,0)});
 test('wrong turn cannot bind thought process',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a'};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-b',items:[{id:'i',type:'thinking',text:'x'}]});assert.equal(out.thoughtProcess,undefined)});
 test('thought snapshot replacement merges streaming updates without duplicate items',()=>{const {api}=loadApp(),out={role:'assistant',content:'',turnId:'t'};api.applyTurnEvent(out,{type:'thought_process',turnId:'t',items:[{id:'i',type:'thinking',text:'a'}]});api.applyTurnEvent(out,{type:'thought_process',turnId:'t',items:[{id:'i',type:'thinking',text:'ab'}]});assert.deepEqual(JSON.parse(JSON.stringify(out.thoughtProcess.items)),[{id:'i',type:'thinking',text:'ab'}])});
 
@@ -608,10 +608,10 @@ test('presentation: genuinely new final body or prefix extension is retained aft
   await f.emit({type:'turn_done'});await f.done;
 });
 
-test('presentation: failed tool produces no event/bubble and ordinary MessageDisplay remains unchanged',async()=>{
+test('presentation: a completed turn with no explicit delivery leaves no placeholder bubble',async()=>{
   const f=await liveViewFixture();assert.equal(f.out().toolMessages,undefined);
-  await f.emit({type:'segment_delta',delta:'ordinary reply after tool error'});await f.emit({type:'turn_done'});await f.done;
-  assert.equal(f.out().toolMessages,undefined);assert.equal(f.bubble().innerHTML,'ordinary reply after tool error');
+  await f.emit({type:'turn_done'});await f.done;
+  assert.equal(f.out().toolMessages,undefined);assert.equal(assistantArticles(f.get('#messages').innerHTML),0);assert.doesNotMatch(f.get('#messages').innerHTML,/对面没有返回文字|正在想/);
 });
 
 test('presentation: tool deliveries survive Memory/sidebar and destroyed message DOM',async()=>{

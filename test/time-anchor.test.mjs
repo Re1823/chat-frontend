@@ -10,6 +10,7 @@ import { handleUserPromptSubmit } from '../src/time-anchor/user-prompt-submit.mj
 import { mergeTimeAnchorSettings } from '../src/time-anchor/integration.mjs';
 import { createMcpHandler, frontendImageTool, frontendMessageTool, timeAnchorTool } from '../src/presentation/frontend-message-mcp.mjs';
 import { photosMcpTools } from '../src/photos/photos-mcp.mjs';
+import { createSessionPolicy } from '../deploy/session-policy.mjs';
 import { readFile as readSource } from 'node:fs/promises';
 
 const key = value => String(value).repeat(64).slice(0, 64);
@@ -130,16 +131,18 @@ test('real stdio MCP reads only its exact synthetic instance pointer',async()=>{
   assert.equal(messages[1].result.isError,undefined);assert.doesNotMatch(JSON.stringify(payload),banned);assert.equal(payload.userPromptLocal.length,16);
 });
 
-test('production settings preserve hooks and denies without frontend or bridge time metadata',async()=>{
+test('production settings preserve hooks and controlled project permissions without frontend or bridge time metadata',async()=>{
   const bridge=await readSource(new URL('../deploy/bridge.mjs',import.meta.url),'utf8');
   const frontend=await readSource(new URL('../public/app.js',import.meta.url),'utf8');
-  const existing={permissions:{defaultMode:'dontAsk',allow:['mcp__ombre-brain__*','mcp__qiuqiu-frontend__send_frontend_message'],deny:['Bash','Write','Edit','NotebookEdit','Agent']},hooks:{MessageDisplay:[{hooks:[{type:'http',url:'fixed'}]}],Stop:[{hooks:[{type:'http',url:'fixed'}]}],StopFailure:[{hooks:[{type:'http',url:'fixed'}]}]},enabledPlugins:{'telegram@claude-plugins-official':false}};
+  const existing=createSessionPolicy({type:'http',url:'fixed'});
   const hookCommand='/usr/bin/node "/root/.local/lib/time-anchor/user-prompt-submit.mjs"';
   const merged=mergeTimeAnchorSettings(existing,{hookCommand});
   for(const event of ['MessageDisplay','Stop','StopFailure','UserPromptSubmit'])assert.ok(Array.isArray(merged.hooks[event]));
   for(const event of ['MessageDisplay','Stop','StopFailure'])assert.deepEqual(merged.hooks[event],existing.hooks[event]);
-  assert.deepEqual(merged.permissions.deny,existing.permissions.deny);assert.equal(merged.permissions.defaultMode,'dontAsk');assert.deepEqual(merged.enabledPlugins,existing.enabledPlugins);
-  for(const denied of ['Bash','Write','Edit','NotebookEdit','Agent'])assert.match(bridge,new RegExp(`['"]${denied}['"]`));
+  assert.deepEqual(merged.permissions.deny,existing.permissions.deny);assert.equal(merged.permissions.defaultMode,'default');assert.deepEqual(merged.enabledPlugins,existing.enabledPlugins);
+  for(const denied of ['Bash','NotebookEdit','Agent'])assert.ok(merged.permissions.deny.includes(denied));
+  for(const allowed of ['Read(/opt/qiuqiu/chat-frontend/**)','Edit(/opt/qiuqiu/chat-frontend/**)','Write(/opt/qiuqiu/chat-frontend/**)'])assert.ok(merged.permissions.allow.includes(allowed));
+  assert.equal(merged.showThinkingSummaries,true);assert.equal(Object.hasOwn(merged,'alwaysThinkingEnabled'),false);
   assert.ok(merged.permissions.allow.includes('mcp__qiuqiu-frontend__read_time_anchor'));
   const mergedAgain=mergeTimeAnchorSettings(merged,{hookCommand});
   assert.equal(mergedAgain.permissions.allow.filter(value=>value==='mcp__qiuqiu-frontend__read_time_anchor').length,1);

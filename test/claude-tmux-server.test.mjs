@@ -27,11 +27,11 @@ test('server dispatches tmux chat, accepts protected hooks and streams NDJSON',a
       const hook=await fetch(`${base}/api/internal/claude-code/events`,{method:'POST',headers:{'content-type':'application/json','x-dwell-hook-secret':'secret'},body:JSON.stringify(payload)});assert.equal(hook.status,200);
     }
     const events=(await response.text()).trim().split('\n').map(JSON.parse);
-    assert.deepEqual(events.map(event=>event.type),['turn_started','segment_delta','segment_done','turn_done']);
-    assert.deepEqual(events.map(event=>event.seq),[1,2,3,4]);
+    assert.deepEqual(events.map(event=>event.type),['turn_started','segment_done','turn_done']);
+    assert.deepEqual(events.map(event=>event.seq),[1,2,3]);
     const turnId=events[0].turnId;
-    const replay=await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=2`);assert.equal(replay.status,200);
-    const replayBody=await replay.json();assert.deepEqual(replayBody.events.map(event=>event.seq),[3,4]);assert.equal(replayBody.latestSeq,4);assert.equal(replayBody.finished,true);
+    const replay=await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=1`);assert.equal(replay.status,200);
+    const replayBody=await replay.json();assert.deepEqual(replayBody.events.map(event=>event.seq),[2,3]);assert.equal(replayBody.latestSeq,3);assert.equal(replayBody.finished,true);
     assert.equal((await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=-1`)).status,400);
     assert.equal((await fetch(`${base}/api/chat/turn/${turnId}/events?afterSeq=0&extra=1`)).status,400);
     assert.equal((await fetch(`${base}/api/chat/turn/unknown/events?afterSeq=0`)).status,404);
