@@ -25,4 +25,4 @@ test('handle drag follows the pointer and fades the backdrop',()=>{assert.match(
 test('handle drag uses a 90px close threshold and otherwise snaps back',()=>{assert.match(app,/if\(dy>90\)closeThoughtProcess\(\);else sheet\.style\.removeProperty\('--thought-drag'\)/)});
 test('outside click is strict while sheet clicks stay inside',()=>{assert.match(app,/if\(event\.target===backdrop\)closeThoughtProcess\(\)/);assert.match(app,/sheet\.onclick=event=>event\.stopPropagation\(\)/)});
 test('background scroll locks while thought sheet is open',()=>{assert.match(css,/body\.thought-open\{overflow:hidden\}/);assert.match(css,/\.thought-open \.messages\{overflow:hidden;overscroll-behavior:none\}/)});
-test('thought styles and message routing script use their current cache versions',()=>{assert.match(html,/style\.css\?v=thought3/);assert.match(html,/app\.js\?v=message1/)});
+test('thought styles and message routing script use the current Photos cache version',()=>{assert.match(html,/style\.css\?v=photos1/);assert.match(html,/app\.js\?v=photos1/)});

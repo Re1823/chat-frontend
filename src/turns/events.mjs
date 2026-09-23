@@ -3,6 +3,7 @@ export const turnEvent = {
   userImages: (turnId, images) => ({type:'user_images', turnId, images}),
   delta: (turnId, delta) => ({type:'segment_delta', turnId, delta}),
   thoughtProcess: (turnId, snapshot) => ({type:'thought_process', turnId, ...snapshot}),
+  albumSaved: (turnId, photo) => ({type:'album_saved', turnId, photo}),
   segmentDone: turnId => ({type:'segment_done', turnId}),
   stopped: turnId => ({type:'turn_stopped', turnId}),
   error: (turnId, error) => ({type:'turn_error', turnId, error}),

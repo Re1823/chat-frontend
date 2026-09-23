@@ -7,7 +7,7 @@ export const photosMcpTools = Object.freeze([
   { name: 'send_saved_photo_to_frontend', description: 'Send one saved photo to the current frontend turn as a structured image message.', inputSchema: { type: 'object', properties: { photoId: { type: 'string', pattern:'^photo_[A-Za-z0-9_-]{32}$' }, text: { type: 'string', maxLength: 16384 } }, required: ['photoId'], additionalProperties: false } }
 ].map(tool => ({ ...tool, annotations: { readOnlyHint: tool.name.startsWith('list_') || tool.name.startsWith('read_'), destructiveHint: false, idempotentHint: tool.name.startsWith('list_') || tool.name.startsWith('read_'), openWorldHint: false } })));
 
-export function createPhotosMcpHandler({ photosStore, readCurrentTurnImage, currentTurnId, sendSavedPhoto = async () => { throw new Error('Frontend photo delivery unavailable'); } }) {
+export function createPhotosMcpHandler({ photosStore, readCurrentTurnImage, currentTurnId, sendSavedPhoto = async () => { throw new Error('Frontend photo delivery unavailable'); }, emitAlbumSaved = async () => {} }) {
   return async ({ name, arguments: args = {} }) => {
     const tool = photosMcpTools.find(item => item.name === name); if (!tool) throw new Error('Unknown Photos tool');
     if (!args || typeof args !== 'object' || Array.isArray(args) || Object.keys(args).some(key => !(key in tool.inputSchema.properties))) throw new Error('Invalid Photos tool arguments');
@@ -19,6 +19,9 @@ export function createPhotosMcpHandler({ photosStore, readCurrentTurnImage, curr
     if (name === 'read_saved_photo') { const image = await photosStore.readPhoto(args.photoId); return { content: [{ type: 'image', data: image.data.toString('base64'), mimeType: image.mime }] }; }
     if (name === 'send_saved_photo_to_frontend') { const photo = photosStore.getPhoto(args.photoId); if (!photo) throw Object.assign(new Error('photo_not_found'), { statusCode: 404 }); return { content: [{ type: 'text', text: JSON.stringify(await sendSavedPhoto(photo, String(args.text || ''))) }] }; }
     const turnId = currentTurnId(); await readCurrentTurnImage(args.imageId, turnId);
-    return { content: [{ type: 'text', text: JSON.stringify(await photosStore.promote({ ...args, sourceTurnId: turnId, savedBy: 'assistant' })) }] };
+    const photo = await photosStore.promote({ ...args, sourceTurnId: turnId, savedBy: 'assistant' });
+    const albumSaved = { type: 'album_saved', photo };
+    await emitAlbumSaved(photo);
+    return { structuredContent: albumSaved, content: [{ type: 'text', text: JSON.stringify(albumSaved) }] };
   };
 }

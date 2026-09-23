@@ -28,7 +28,7 @@ import {createRuntimeObservability} from './src/runtimes/rsc/runtime-observabili
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '0.0.0.0';
-const mime = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.svg':'image/svg+xml' };
+const mime = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.mjs':'text/javascript; charset=utf-8', '.svg':'image/svg+xml' };
 const json = (res, status, data) => { res.writeHead(status, {'content-type':'application/json; charset=utf-8'}); res.end(JSON.stringify(data)); };
 const readBody = req => new Promise((resolve, reject) => { let s=''; req.on('data', c => { s += c; if (s.length > 2e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch(e) { reject(e); } }); });
 async function relay(req, res, test=false, suppliedBody,validateUpstream) {
@@ -82,7 +82,7 @@ const CLIENT_REQUEST_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab
 
 export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null }={}){
   const ombreRoutes=ombreService?createOmbreDashboardRoutes(ombreService):null;
-  const photosMcpHandler=photosStore&&imageStore?createPhotosMcpHandler({photosStore,currentTurnId:()=>claudeRuntime?.activeTurnId?.(),readCurrentTurnImage:(imageId,turnId)=>imageStore.readForTurn(imageId,turnId),sendSavedPhoto:(photo,text)=>claudeRuntime.deliverSavedPhoto(photo,text)}):null;
+  const photosMcpHandler=photosStore&&imageStore?createPhotosMcpHandler({photosStore,currentTurnId:()=>claudeRuntime?.activeTurnId?.(),readCurrentTurnImage:(imageId,turnId)=>imageStore.readForTurn(imageId,turnId),sendSavedPhoto:(photo,text)=>claudeRuntime.deliverSavedPhoto(photo,text),emitAlbumSaved:photo=>claudeRuntime.emitAlbumSaved(photo)}):null;
   const server=http.createServer(async(req,res)=>{
     try{
       if(req.method==='POST'&&req.url==='/api/internal/frontend-message'){
@@ -161,7 +161,8 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
       if(req.method==='POST'&&req.url==='/api/chat/images'){
         if(!imageStore)return json(res,503,{error:'image_upload_unavailable'});
         const files=await receiveImageUpload(req,imageStore.limits);if(files.length>imageStore.limits.maxFiles)return json(res,413,{error:'too_many_images'});
-        const images=[];for(const file of files)images.push(await imageStore.add(file));return json(res,201,{images});
+        const rawCapturedAt=String(req.headers['x-image-captured-at']||''),capturedAt=/^\d{12,13}$/.test(rawCapturedAt)?Number(rawCapturedAt):null,sourceType=['camera','upload'].includes(req.headers['x-image-source'])?req.headers['x-image-source']:'upload';
+        const images=[];for(const file of files)images.push(await imageStore.add({...file,capturedAt,sourceType}));return json(res,201,{images});
       }
       const chatImageMatch=req.method==='GET'&&new URL(req.url,'http://local').pathname.match(/^\/api\/chat\/images\/(img_[A-Za-z0-9_-]{43})\/(content|thumbnail)$/);
       if(chatImageMatch){if(!imageStore)return json(res,404,{error:'image_not_found'});const image=await imageStore.readPublic(chatImageMatch[1],chatImageMatch[2]);res.writeHead(200,{'content-type':image.mime,'content-length':image.data.length,'cache-control':'private, max-age=300','x-content-type-options':'nosniff'});res.end(image.data);return}
@@ -179,7 +180,7 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         return json(res,201,await photosStore.promote({...body,savedBy:'user'}));
       }
       const attachPhotoMatch=req.method==='POST'&&photosUrl.pathname.match(/^\/api\/photos\/(photo_[A-Za-z0-9_-]{32})\/attach$/);
-      if(attachPhotoMatch){if(!photosStore||!imageStore)return json(res,503,{error:'photos_unavailable'});const photo=await photosStore.readPhoto(attachPhotoMatch[1]);return json(res,201,await imageStore.add({data:photo.data,mime:photo.mime}))}
+      if(attachPhotoMatch){if(!photosStore||!imageStore)return json(res,503,{error:'photos_unavailable'});const photo=await photosStore.readPhoto(attachPhotoMatch[1]);return json(res,201,await imageStore.add({data:photo.data,mime:photo.mime,capturedAt:photo.metadata.capturedAt,sourceType:photo.metadata.sourceType}))}
       const photoMatch=req.method==='GET'&&photosUrl.pathname.match(/^\/api\/photos\/(photo_[A-Za-z0-9_-]{32})(?:\/(content|thumbnail))?$/);
       if(photoMatch){if(!photosStore)return json(res,503,{error:'photos_unavailable'});if(!photoMatch[2]){const photo=photosStore.getPhoto(photoMatch[1]);return photo?json(res,200,photo):json(res,404,{error:'photo_not_found'})}const image=await photosStore.readPhoto(photoMatch[1],photoMatch[2]);res.writeHead(200,{'content-type':image.mime,'content-length':image.data.length,'cache-control':'private, max-age=86400','x-content-type-options':'nosniff'});res.end(image.data);return}
       if(req.method==='GET'&&req.url==='/api/runtimes/claude-tmux/status'){

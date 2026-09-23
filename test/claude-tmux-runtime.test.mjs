@@ -8,7 +8,7 @@ function fixture({state='connected',stopTimeoutMs=20}={}){
   const runtimeRecord={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};const prompts=[],interrupts=[];
   const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value)};
   const registry={load:async()=>runtimeRecord,get:()=>runtimeRecord,reconcile:async()=>({state,runtime:runtimeRecord,inspection:{alive:state==='connected'}})};
-  const runtime=createClaudeTmuxRuntime({config:{enabled:true,submitDelayMs:250,stopTimeoutMs},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
+  const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:250,stopTimeoutMs},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
   return {runtime,prompts,interrupts,completions};
 }
 
@@ -23,6 +23,15 @@ test('runtime keeps ordinary MessageDisplay frames internal while preserving com
   assert.deepEqual(events.map(event=>event.type),['turn_started','segment_done','turn_done']);
   assert.equal(events.some(event=>event.type==='segment_delta'),false);
   assert.deepEqual(completions,['turn-1']);
+});
+
+test('album_saved is delivered live and retained in the turn replay journal',async()=>{
+  const {runtime}=fixture();const events=[];await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'turn-album',prompt:'save it',emit:event=>events.push(event)});
+  const photo={photoId:'photo_'+Buffer.alloc(24,2).toString('base64url'),albumId:null,albumName:null,note:'kept',savedAt:123};
+  runtime.emitAlbumSaved(photo);await runtime.ingestRaw({event:'Stop'});
+  assert.deepEqual(events.map(event=>event.type),['turn_started','album_saved','segment_done','turn_done']);
+  assert.deepEqual(runtime.turnEvents('turn-album',0).events.find(event=>event.type==='album_saved').photo,photo);
 });
 
 test('stop waits for confirmation and late stop closes an unconfirmed turn once',async()=>{

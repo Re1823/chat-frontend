@@ -82,6 +82,10 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
       const turn=turnStore.get();if(!turn||turn.runtimeId!==config.runtimeId||turn.state!=='running'||turn.closed||turnStore.status(turn.turnId)?.detached)throw Object.assign(new Error('No active frontend turn'),{statusCode:409});
       const messageId=randomUUID();turnStore.emit(config.runtimeId,turn.turnId,{type:'assistant_message',turnId:turn.turnId,messageId,text,source:'tool',images:[photo]});return {ok:true,messageId};
     },
+    emitAlbumSaved(photo){
+      const turn=turnStore.get();if(!turn||turn.runtimeId!==config.runtimeId||turn.state!=='running'||turn.closed)throw Object.assign(new Error('No active frontend turn'),{statusCode:409});
+      turnStore.emit(config.runtimeId,turn.turnId,turnEvent.albumSaved(turn.turnId,photo));return {ok:true,turnId:turn.turnId,photoId:photo.photoId};
+    },
     configuration(){return {enabled:config.enabled,unsupportedPlatform:config.unsupportedPlatform,runtimeId:config.runtimeId}},
     async initialize(){
       let saved=await registry.load();

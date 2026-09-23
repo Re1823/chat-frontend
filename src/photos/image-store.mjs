@@ -15,7 +15,7 @@ const sniff = data => {
   if (data.length >= 12 && data.subarray(0, 4).toString() === 'RIFF' && data.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
   return null;
 };
-const safeMeta = record => ({ imageId: record.imageId, mime: record.mime, width: record.width, height: record.height, byteSize: record.byteSize, thumbnailUrl: `/api/chat/images/${record.imageId}/thumbnail`, contentUrl: `/api/chat/images/${record.imageId}/content` });
+const safeMeta = record => ({ imageId: record.imageId, mime: record.mime, width: record.width, height: record.height, byteSize: record.byteSize, capturedAt: record.capturedAt || null, sourceType: record.sourceType || 'upload', thumbnailUrl: `/api/chat/images/${record.imageId}/thumbnail`, contentUrl: `/api/chat/images/${record.imageId}/content` });
 
 export function createImageStore({ rootDir, now = () => Date.now(), limits = IMAGE_LIMITS } = {}) {
   if (!rootDir) throw new Error('image store rootDir is required');
@@ -56,7 +56,7 @@ export function createImageStore({ rootDir, now = () => Date.now(), limits = IMA
   };
   return {
     limits,
-    async add({ data, mime }) {
+    async add({ data, mime, capturedAt = null, sourceType = 'upload' }) {
       await ready; await cleanup();
       const normalized = await encode(data, mime);
       const currentBytes = [...records.values()].reduce((total, record) => total + record.byteSize, 0);
@@ -65,7 +65,8 @@ export function createImageStore({ rootDir, now = () => Date.now(), limits = IMA
       await writeFile(contentPath, normalized.content, { mode: 0o600, flag: 'wx' });
       try { await writeFile(thumbnailPath, normalized.thumbnail, { mode: 0o600, flag: 'wx' }); }
       catch (error) { await unlink(contentPath).catch(() => {}); throw error; }
-      const record = { imageId: id, contentPath, thumbnailPath, mime: normalized.mime, width: normalized.width, height: normalized.height, byteSize: normalized.content.length, createdAt: now(), expiresAt: now() + limits.tempTtlMs, state: 'uploaded', boundTurnId: null, clientRequestId: null };
+      capturedAt=Number(capturedAt);capturedAt=Number.isFinite(capturedAt)&&capturedAt>=new Date(1990,0,1).getTime()&&capturedAt<=now()+86400000?capturedAt:null;sourceType=['camera','upload'].includes(sourceType)?sourceType:'upload';
+      const record = { imageId: id, contentPath, thumbnailPath, mime: normalized.mime, width: normalized.width, height: normalized.height, byteSize: normalized.content.length, capturedAt, sourceType, createdAt: now(), expiresAt: now() + limits.tempTtlMs, state: 'uploaded', boundTurnId: null, clientRequestId: null };
       records.set(id, record); return safeMeta(record);
     },
     async bind(ids, { turnId, clientRequestId }) {

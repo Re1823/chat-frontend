@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createRequire } from 'node:module';
 import sharp from 'sharp';
+import initSqlJs from 'sql.js';
 import { createImageStore, IMAGE_LIMITS, IMAGE_ID_PATTERN } from '../src/photos/image-store.mjs';
 import { createPhotosStore, ALBUM_ID_PATTERN, PHOTO_ID_PATTERN } from '../src/photos/photos-store.mjs';
 import { createPhotosMcpHandler, photosMcpTools } from '../src/photos/photos-mcp.mjs';
@@ -55,19 +57,28 @@ test('Photos uses SQLite metadata plus durable files; promotion survives temp TT
   const photos=await createPhotosStore({dbPath:join(dir,'db','photos.sqlite'),storageDir:join(dir,'durable'),imageStore:images,now:()=>clock});
   const album=await photos.createAlbum({name:'Fixtures',mood:'calm',note:'test',createdBy:'user'});assert.match(album.albumId,ALBUM_ID_PATTERN);
   const saved=await photos.promote({imageId:image.imageId,albumId:album.albumId,note:'kept',sourceTurnId:'turn',sourceMessageId:'message',savedBy:'user'});assert.match(saved.photoId,PHOTO_ID_PATTERN);
-  assert.equal(photos.listAlbums()[0].photoCount,1);assert.equal(photos.listPhotos({albumId:album.albumId})[0].note,'kept');
+  assert.equal(photos.listAlbums()[0].photoCount,1);const projected=photos.listPhotos({albumId:album.albumId})[0];assert.equal(projected.note,'kept');assert.equal(projected.caption,'kept');assert.equal(projected.capturedAt,null);assert.deepEqual(projected.tags,[]);assert.deepEqual(projected.reactions,[]);
   clock+=51;await images.cleanup();assert.equal((await photos.readPhoto(saved.photoId)).mime,'image/webp');
   if(process.platform!=='win32'){assert.equal((await stat(join(dir,'db','photos.sqlite'))).mode&0o777,0o600);assert.equal((await stat(join(dir,'durable','images',`${saved.photoId}.bin`))).mode&0o777,0o600)}
   photos.close();
 });
 
+test('legacy Photos schema migrates in place and missing capture metadata stays unknown',async()=>{
+  const dir=await root(),dbPath=join(dir,'legacy','photos.sqlite');await mkdir(join(dir,'legacy'),{recursive:true});
+  const require=createRequire(import.meta.url),wasm=require.resolve('sql.js/dist/sql-wasm.wasm'),SQL=await initSqlJs({locateFile:()=>wasm}),db=new SQL.Database(),photoId='photo_'+Buffer.alloc(24,7).toString('base64url');
+  db.run(`CREATE TABLE albums (id TEXT PRIMARY KEY, name TEXT NOT NULL, mood TEXT, note TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL);CREATE TABLE photos (id TEXT PRIMARY KEY, storage_key TEXT NOT NULL UNIQUE, mime TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, byte_size INTEGER NOT NULL, note TEXT, saved_at INTEGER NOT NULL, source_type TEXT NOT NULL, source_turn_id TEXT, source_message_id TEXT, saved_by TEXT NOT NULL);CREATE TABLE album_photos (album_id TEXT NOT NULL, photo_id TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(album_id,photo_id));`);
+  db.run('INSERT INTO photos(id,storage_key,mime,width,height,byte_size,note,saved_at,source_type,source_turn_id,source_message_id,saved_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',[photoId,photoId,'image/jpeg',80,60,123,'legacy',1000,'chat','turn-old',null,'assistant']);await writeFile(dbPath,Buffer.from(db.export()));db.close();
+  const imageStore=createImageStore({rootDir:join(dir,'temp')}),photos=await createPhotosStore({dbPath,storageDir:join(dir,'durable'),imageStore}),photo=photos.getPhoto(photoId);
+  assert.equal(photo.note,'legacy');assert.equal(photo.capturedAt,null);assert.equal(photo.sourceConversationId,null);assert.equal(photo.savedByDisplay,null);assert.deepEqual(photo.tags,[]);assert.deepEqual(photo.reactions,[]);photos.close();
+});
+
 test('Photos MCP tools enforce opaque IDs and structured saved-photo delivery',async()=>{
   const names=photosMcpTools.map(tool=>tool.name);assert.deepEqual(names,['save_frontend_photo_to_photos','create_photo_album','list_photo_albums','list_photos','read_saved_photo','send_saved_photo_to_frontend']);
-  const photoId='photo_'+Buffer.alloc(24,1).toString('base64url'),calls=[],handler=createPhotosMcpHandler({photosStore:{createAlbum:async a=>({albumId:'alb',...a}),listAlbums:()=>[],listPhotos:()=>[],getPhoto:id=>id===photoId?{photoId,mime:'image/jpeg',width:80,height:60}:null,readPhoto:async id=>({data:Buffer.from('image'),mime:'image/jpeg'}),promote:async a=>{calls.push(a);return{photoId:'photo'}}},readCurrentTurnImage:async(id,turn)=>calls.push({id,turn}),currentTurnId:()=> 'active_turn',sendSavedPhoto:async(photo,text)=>{calls.push({photo,text});return{delivered:true}}});
+  const photoId='photo_'+Buffer.alloc(24,1).toString('base64url'),calls=[],handler=createPhotosMcpHandler({photosStore:{createAlbum:async a=>({albumId:'alb',...a}),listAlbums:()=>[],listPhotos:()=>[],getPhoto:id=>id===photoId?{photoId,mime:'image/jpeg',width:80,height:60}:null,readPhoto:async id=>({data:Buffer.from('image'),mime:'image/jpeg'}),promote:async a=>{calls.push(a);return{photoId:'photo',albumName:'Keeps',savedAt:123}}},readCurrentTurnImage:async(id,turn)=>calls.push({id,turn}),currentTurnId:()=> 'active_turn',sendSavedPhoto:async(photo,text)=>{calls.push({photo,text});return{delivered:true}},emitAlbumSaved:async photo=>calls.push({event:'album_saved',photo})});
   const read=await handler({name:'read_saved_photo',arguments:{photoId}});assert.equal(read.content[0].type,'image');assert.equal(read.content[0].mimeType,'image/jpeg');
   const sent=await handler({name:'send_saved_photo_to_frontend',arguments:{photoId,text:'look'}});assert.deepEqual(JSON.parse(sent.content[0].text),{delivered:true});assert.equal(calls[0].photo.photoId,photoId);assert.equal(calls[0].text,'look');
   await assert.rejects(handler({name:'read_saved_photo',arguments:{photoId:'x',path:'/etc/passwd'}}),/Invalid/);
-  const imageId='img_'+Buffer.alloc(32,1).toString('base64url');await handler({name:'save_frontend_photo_to_photos',arguments:{imageId,note:'keep'}});assert.deepEqual(calls[1],{id:imageId,turn:'active_turn'});
+  const imageId='img_'+Buffer.alloc(32,1).toString('base64url'),savedResult=await handler({name:'save_frontend_photo_to_photos',arguments:{imageId,note:'keep'}});assert.deepEqual(calls[1],{id:imageId,turn:'active_turn'});assert.equal(savedResult.structuredContent.type,'album_saved');assert.deepEqual(calls[3],{event:'album_saved',photo:{photoId:'photo',albumName:'Keeps',savedAt:123}});
 });
 
 test('HTTP upload, image-only turn, active-turn MCP read and journal replay carry IDs but never base64 or paths',async t=>{
@@ -75,7 +86,7 @@ test('HTTP upload, image-only turn, active-turn MCP read and journal replay carr
   const record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/root'},transport={sendPrompt:async value=>prompts.push(value),complete:async()=>{}},registry={load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})};
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress(),imageStore,log:()=>{}});await runtime.initialize();
   const secret='s'.repeat(32),server=createDwellServer({claudeRuntime:runtime,frontendDeliverySecret:secret,imageStore});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close()});const base=`http://127.0.0.1:${server.address().port}`;
-  const form=new FormData();form.append('images',new Blob([await makeImage('png')],{type:'image/png'}),'../../private.png');const uploaded=await fetch(`${base}/api/chat/images`,{method:'POST',body:form});assert.equal(uploaded.status,201);const image=(await uploaded.json()).images[0];assert.match(image.imageId,IMAGE_ID_PATTERN);assert(!JSON.stringify(image).includes('private.png'));assert(!JSON.stringify(image).includes(dir));
+  const capturedAt=new Date(2025,6,8,9,10,11).getTime(),form=new FormData();form.append('images',new Blob([await makeImage('png')],{type:'image/png'}),'../../private.png');const uploaded=await fetch(`${base}/api/chat/images`,{method:'POST',headers:{'x-image-captured-at':String(capturedAt),'x-image-source':'camera'},body:form});assert.equal(uploaded.status,201);const image=(await uploaded.json()).images[0];assert.match(image.imageId,IMAGE_ID_PATTERN);assert.equal(image.capturedAt,capturedAt);assert.equal(image.sourceType,'camera');assert(!JSON.stringify(image).includes('private.png'));assert(!JSON.stringify(image).includes(dir));
   const response=await fetch(`${base}/api/chat`,{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify({config:{runtime:'claude_tmux',runtimeId:'runtime-main'},messages:[{role:'user',content:''}],clientRequestId:'request_image_only',imageIds:[image.imageId]})});
   await new Promise(resolve=>setTimeout(resolve,0));assert.equal(prompts.length,1);assert(prompts[0].prompt.includes(image.imageId));assert(!prompts[0].prompt.includes(dir));assert.deepEqual(Object.keys(prompts[0]).sort(),['delayMs','prompt','sessionName','turnId']);
   const internal=await fetch(`${base}/api/internal/frontend-image`,{method:'POST',headers:{'content-type':'application/json','x-frontend-delivery-secret':secret},body:JSON.stringify({imageId:image.imageId})});assert.equal(internal.status,200);assert.equal(internal.headers.get('content-type'),'image/png');
@@ -94,10 +105,10 @@ test('upload endpoint rejects too many images and non-images without exposing fi
 });
 
 test('Photos HTTP APIs create/list/promote/read metadata and binary content without storing image blobs in SQLite',async t=>{
-  const dir=await root(),imageStore=createImageStore({rootDir:join(dir,'temp')}),uploaded=await imageStore.add({data:await makeImage('jpeg'),mime:'image/jpeg'}),dbPath=join(dir,'photos','photos.sqlite');
+  const dir=await root(),capturedAt=new Date(2025,6,8).getTime(),imageStore=createImageStore({rootDir:join(dir,'temp')}),uploaded=await imageStore.add({data:await makeImage('jpeg'),mime:'image/jpeg',capturedAt,sourceType:'camera'}),dbPath=join(dir,'photos','photos.sqlite');
   const photosStore=await createPhotosStore({dbPath,storageDir:join(dir,'durable'),imageStore});const server=createDwellServer({imageStore,photosStore});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();photosStore.close()});const base=`http://127.0.0.1:${server.address().port}`;
   const albumResponse=await fetch(`${base}/api/photos/albums`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'Album',note:'safe'})});assert.equal(albumResponse.status,201);const album=await albumResponse.json();
-  const promotedResponse=await fetch(`${base}/api/photos/promote`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageId:uploaded.imageId,albumId:album.albumId,note:'saved'})});assert.equal(promotedResponse.status,201);const photo=await promotedResponse.json();
+  const promotedResponse=await fetch(`${base}/api/photos/promote`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageId:uploaded.imageId,albumId:album.albumId,note:'saved'})});assert.equal(promotedResponse.status,201);const photo=await promotedResponse.json();assert.equal(photo.capturedAt,capturedAt);assert.equal(photo.sourceType,'camera');
   assert.equal((await (await fetch(`${base}/api/photos/albums`)).json()).albums[0].photoCount,1);assert.equal((await (await fetch(`${base}/api/photos?albumId=${album.albumId}`)).json()).photos[0].photoId,photo.photoId);assert.equal((await fetch(`${base}/api/photos/${photo.photoId}/content`)).headers.get('content-type'),'image/jpeg');assert.equal((await fetch(`${base}/api/photos/${photo.photoId}/thumbnail`)).status,200);
   const attachedResponse=await fetch(`${base}/api/photos/${photo.photoId}/attach`,{method:'POST'});assert.equal(attachedResponse.status,201);const attached=await attachedResponse.json();assert.match(attached.imageId,IMAGE_ID_PATTERN);assert.notEqual(attached.imageId,uploaded.imageId);assert.equal(attached.mime,'image/jpeg');
   const db=await readFile(dbPath);assert(!db.includes((await imageStore.readPublic(uploaded.imageId)).data.toString('base64')));assert(!db.includes('/tmp/'));assert(!db.includes(dir));
