@@ -50,6 +50,7 @@ footer{padding:14px 20px;background:var(--paper);border-top:1px solid var(--line
 /* iOS：以可视 viewport 驱动三段式页面，表单字号不低于 Safari 自动缩放阈值。 */
 html,body{width:100%;max-width:100%;overflow-x:hidden}
 html,body{height:100%;overflow:hidden}
+@media(display-mode:standalone){html,body{height:100vh;min-height:100vh;background:var(--bg)}}
 .app{position:fixed;inset-inline:0;top:0;bottom:auto;width:100%;max-width:100%;height:var(--vv-bottom,100dvh);max-height:var(--vv-bottom,100dvh);overflow:hidden}
 main{min-height:0;padding-top:var(--vv-offset-top,0px)}.messages{min-height:0;overscroll-behavior:contain}
 .send,.attach,.emoji,.microphone{flex:0 0 auto;touch-action:manipulation}

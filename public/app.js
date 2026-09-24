@@ -478,3 +478,4 @@ function restoreInterruptedConnection(){
 }
 restoreInterruptedConnection();
 async function recoverLegacySuppressedFinals(){return false}
+if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
