@@ -11,19 +11,30 @@ test('Assistant Details has four frosted shortcuts and Conversations reuses the 
   assert.match(css,/\.assistant-quick-actions\{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(css,/backdrop-filter:blur\(18px\)/);
   assert.match(app,/\$\('#assistantConversations'\)\.onclick=\(\)=>\{showChat\(\);openContinuation\(\)\}/);
-  assert.match(html,/id="continueBtn"/);
+  assert.match(html,/<span class="header-empty-slot" aria-hidden="true"><\/span>/);
+  assert.doesNotMatch(html,/id="continueBtn"/);
+  assert.doesNotMatch(app,/#continueBtn/);
+  assert.match(css,/\.header-empty-slot\{[^}]*width:44px[^}]*flex:0 0 44px[^}]*pointer-events:none/);
 });
 
 test('chat search UI follows the visible chat and mobile keyboard contract',()=>{
   assert.match(html,/placeholder="Search in this chat"/);
   assert.match(html,/id="closeChatSearch"/);
   assert.match(html,/id="openChatCalendar"/);
-  assert.match(css,/\.chat-search-header input\{[^}]*font:16px/);
+  const inputRule=css.match(/\.chat-search-header input\{([^}]*)\}/)?.[1]||'';
+  const effectiveSize=Number(inputRule.match(/font-size:([\d.]+)px/)?.[1]);
+  assert.ok(effectiveSize>=16,`search input effective font-size must be at least 16px, got ${effectiveSize}`);
+  assert.match(inputRule,/font-family:inherit/);
+  assert.doesNotMatch(inputRule,/font:/);
+  const viewport=html.match(/<meta name="viewport" content="([^"]+)"/)?.[1]||'';
+  assert.doesNotMatch(viewport,/maximum-scale|user-scalable/i);
+  assert.doesNotMatch(css,/chat-searching[^{}]*\.app\{[^}]*transform/);
   assert.match(css,/\.chat-search-toolbar\{[^}]*--vv-bottom/);
   assert.match(css,/@media\(max-width:390px\)/);
   assert.match(app,/chatSearchTimer=setTimeout\(\(\)=>runChatSearch\(event\.target\.value\),180\)/);
   assert.match(app,/scrollIntoView\?\.\(\{block:'center',behavior:'smooth'\}\)/);
   assert.match(app,/chatSearchState\.scrollTop/);
+  assert.match(app,/focus\?\.\(\{preventScroll:true\}\)/);
 });
 
 test('keyword index is built only from visible user and assistant presentation text',()=>{
@@ -45,6 +56,10 @@ test('calendar is a real visual-viewport bottom sheet with month navigation and 
   assert.match(app,/function changeCalendarMonth\(delta\)/);
   assert.match(app,/No messages on this date/);
   assert.match(app,/localDayKey\(time\)===key/);
+  assert.match(css,/\.calendar-days button\.selected\{[^}]*background:var\(--bubble-user,#EFE9E6\)[^}]*color:var\(--text,var\(--ink\)\)/);
+  assert.match(css,/\.calendar-done\{[^}]*var\(--bubble-user,#EFE9E6\)[^}]*var\(--accent\)/);
+  assert.match(css,/\.calendar-month-row button\{[^}]*color:var\(--text-muted,var\(--muted\)\)/);
+  assert.doesNotMatch(css,/#a9c3d0|#90aebc/i);
 });
 
 test('day dividers are derived at presentation time and never stored as messages',()=>{
@@ -56,6 +71,6 @@ test('day dividers are derived at presentation time and never stored as messages
 });
 
 test('search release bumps both browser assets together',()=>{
-  assert.match(html,/style\.css\?v=search1/);
-  assert.match(html,/app\.js\?v=search1/);
+  assert.match(html,/style\.css\?v=search2/);
+  assert.match(html,/app\.js\?v=search2/);
 });
