@@ -86,12 +86,11 @@ main:not(.memory-mode)>header:before{display:none}
 .chat-floating .chat-heading{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .chat-floating button{pointer-events:auto;color:var(--icon);flex-shrink:0}
 .chat-floating svg,.composer-controls svg,.message-time svg,.message .avatar svg{width:22px;height:22px;display:block;flex-shrink:0}
-.chat-floating #menuBtn,.top-capsule{
+.chat-floating #menuBtn,.chat-floating #continueBtn,.top-capsule{
   height:44px;background:rgba(255,255,255,.6);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   border:0;box-shadow:0 2px 8px #3a302008;
 }
-.chat-floating #menuBtn{width:44px;border-radius:50%;padding:11px;margin:0;display:grid;place-items:center}
-.header-empty-slot{order:0;width:44px;height:44px;flex:0 0 44px;pointer-events:none}
+.chat-floating #menuBtn,.chat-floating #continueBtn{width:44px;border-radius:50%;padding:11px;margin:0;display:grid;place-items:center}
 
 .floating-actions{display:flex;gap:10px;margin-left:auto;align-items:center;order:4}
 .top-capsule{display:flex;align-items:center;border-radius:24px;padding:0 3px}
@@ -156,6 +155,7 @@ main:not(.memory-mode) .welcome .orb{display:none}
 /* 隐藏抽屉的外扩阴影不能透入聊天舞台。 */
 body:has(main:not(.memory-mode)) .sheet:not(.on),.app:has(main:not(.memory-mode)) aside:not(.on){visibility:hidden}
 
+.chat-floating #continueBtn{order:0}
 .chat-floating .top-capsule{order:1}
 /* 接入与续窗的可聚焦文本仍满足 Safari 的字号阈值。 */
 #settings input,#settings textarea,#settings select,#continueSheet textarea{font-size:16px}

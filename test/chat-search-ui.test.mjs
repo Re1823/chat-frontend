@@ -11,10 +11,13 @@ test('Assistant Details has four frosted shortcuts and Conversations reuses the 
   assert.match(css,/\.assistant-quick-actions\{[^}]*grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(css,/backdrop-filter:blur\(18px\)/);
   assert.match(app,/\$\('#assistantConversations'\)\.onclick=\(\)=>\{showChat\(\);openContinuation\(\)\}/);
-  assert.match(html,/<span class="header-empty-slot" aria-hidden="true"><\/span>/);
-  assert.doesNotMatch(html,/id="continueBtn"/);
+  assert.match(html,/<button id="continueBtn" class="continue-pill" type="button" aria-label="暂未开放"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1\.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"\/><path d="M14 2v6h6M8 13h8M8 17h5"\/><\/svg><\/button>/);
+  assert.doesNotMatch(html,/id="continueBtn"[^>]*(?:hidden|data-soon|title=)/);
   assert.doesNotMatch(app,/#continueBtn/);
-  assert.match(css,/\.header-empty-slot\{[^}]*width:44px[^}]*flex:0 0 44px[^}]*pointer-events:none/);
+  assert.match(css,/\.chat-floating #menuBtn,\.chat-floating #continueBtn\{[^}]*width:44px[^}]*border-radius:50%[^}]*padding:11px[^}]*display:grid[^}]*place-items:center/);
+  assert.match(css,/\.chat-floating #menuBtn,\.chat-floating #continueBtn,\.top-capsule\{[^}]*height:44px[^}]*backdrop-filter:blur\(20px\)[^}]*box-shadow:0 2px 8px/);
+  assert.doesNotMatch(css,/\.header-empty-slot/);
+  assert.doesNotMatch(app,/continueBtn[^\n]*(?:openContinuation|fetch|rotation|rsc)/i);
 });
 
 test('chat search UI follows the visible chat and mobile keyboard contract',()=>{
@@ -71,6 +74,6 @@ test('day dividers are derived at presentation time and never stored as messages
 });
 
 test('search release bumps both browser assets together',()=>{
-  assert.match(html,/style\.css\?v=search2/);
-  assert.match(html,/app\.js\?v=search2/);
+  assert.match(html,/style\.css\?v=search3/);
+  assert.match(html,/app\.js\?v=search3/);
 });
