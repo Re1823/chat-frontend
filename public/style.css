@@ -219,6 +219,7 @@ body:has(main:not(.memory-mode)) .sheet:not(.on),.app:has(main:not(.memory-mode)
 #messages .message.user .avatar img{display:block;width:100%;height:100%;border-radius:inherit;object-fit:cover}
 .connections-detail{z-index:24;transition:transform .26s ease-out}
 .connections-detail #closeSettings{font-size:30px;font-weight:300}
+.notification-setting{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:18px;padding:15px 16px;border-radius:16px;background:#fff9;border:1px solid var(--line)}.notification-setting div{display:grid;gap:4px;min-width:0}.notification-setting strong{font-size:14px;font-weight:500}.notification-setting small{color:var(--muted);font-size:11px;line-height:1.4}.notification-setting button{min-width:64px;height:38px;border:0;border-radius:999px;background:var(--bubble-user);color:var(--ink);font:500 13px/1 inherit;padding:0 14px;cursor:pointer}.notification-setting button:active{filter:brightness(.97)}.notification-setting button:disabled{opacity:.48;cursor:default}
 body:has(main:not(.memory-mode)) .connections-detail.leaving:not(.on){visibility:visible;pointer-events:none}
 @media(max-width:760px){.connections-detail{left:0;right:auto;width:100%;height:100dvh;max-height:var(--vv-bottom,100dvh);padding:calc(24px + env(safe-area-inset-top,0px)) 24px calc(24px + env(safe-area-inset-bottom,0px))}}
 @media(prefers-reduced-motion:reduce){.connections-detail{transition:none}}

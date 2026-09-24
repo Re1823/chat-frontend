@@ -25,6 +25,8 @@ import { createPhotosMcpHandler, photosMcpTools } from './src/photos/photos-mcp.
 import {createProductionRscStateStore,createProductionRscCoordinator} from './src/runtimes/rsc/production-state.mjs';
 import {createRuntimeObservability} from './src/runtimes/rsc/runtime-observability.mjs';
 import {createDurableTurnQueue} from './src/turns/durable-turn-queue.mjs';
+import {createPushSubscriptionStore} from './src/push/subscription-store.mjs';
+import {createPushService} from './src/push/service.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -32,6 +34,9 @@ const host = process.env.HOST || '0.0.0.0';
 const mime = { '.html':'text/html; charset=utf-8', '.css':'text/css; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.mjs':'text/javascript; charset=utf-8', '.svg':'image/svg+xml', '.png':'image/png', '.webmanifest':'application/manifest+json; charset=utf-8' };
 const json = (res, status, data) => { res.writeHead(status, {'content-type':'application/json; charset=utf-8'}); res.end(JSON.stringify(data)); };
 const readBody = req => new Promise((resolve, reject) => { let s=''; req.on('data', c => { s += c; if (s.length > 2e6) req.destroy(); }); req.on('end', () => { try { resolve(JSON.parse(s || '{}')); } catch(e) { reject(e); } }); });
+const readSmallJson=async(req,maxBytes=32768)=>{if(!String(req.headers['content-type']||'').toLowerCase().startsWith('application/json'))throw Object.assign(new Error('json_content_type_required'),{statusCode:415});let bytes=0,text='';for await(const chunk of req){bytes+=Buffer.byteLength(chunk);if(bytes>maxBytes)throw Object.assign(new Error('push_request_too_large'),{statusCode:413});text+=chunk}try{return JSON.parse(text||'{}')}catch{throw Object.assign(new Error('invalid_json'),{statusCode:400})}};
+const sameSiteRequest=req=>!req.headers['sec-fetch-site']||['same-origin','same-site','none'].includes(String(req.headers['sec-fetch-site']));
+const requestOrigin=req=>`${String(req.headers['x-forwarded-proto']||'http').split(',')[0].trim()}://${req.headers.host}`;
 async function relay(req, res, test=false, suppliedBody,validateUpstream) {
   try {
     const { config:cfg, messages=[] } = suppliedBody||await readBody(req);
@@ -115,11 +120,20 @@ export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoo
   return createDurableTurnQueue({path,dispatch,canDispatch,log,...options});
 }
 
-export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null }={}){
+export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null,pushStore=null,pushService=null }={}){
   const ombreRoutes=ombreService?createOmbreDashboardRoutes(ombreService):null;
   const photosMcpHandler=photosStore&&imageStore?createPhotosMcpHandler({photosStore,currentTurnId:()=>claudeRuntime?.activeTurnId?.(),readCurrentTurnImage:(imageId,turnId)=>imageStore.readForTurn(imageId,turnId),sendSavedPhoto:(photo,text)=>claudeRuntime.deliverSavedPhoto(photo,text),emitAlbumSaved:photo=>claudeRuntime.emitAlbumSaved(photo)}):null;
   const server=http.createServer(async(req,res)=>{
     try{
+      if(req.method==='GET'&&req.url==='/api/push/config'){
+        res.setHeader('cache-control','no-store');return json(res,200,pushService?.publicConfig?.()||{supported:false,publicKey:null});
+      }
+      if(['POST','DELETE'].includes(req.method)&&req.url==='/api/push/subscriptions'){
+        res.setHeader('cache-control','no-store');if(!sameSiteRequest(req)||req.headers.origin&&req.headers.origin!==requestOrigin(req))return json(res,403,{error:'forbidden'});if(!pushStore||!pushService?.ready)return json(res,503,{error:'push_unavailable'});
+        const body=await readSmallJson(req);
+        if(req.method==='POST'){if(Object.keys(body).some(key=>!['installationId','subscription'].includes(key)))return json(res,400,{error:'invalid_push_request'});const record=await pushStore.upsert(body);return json(res,201,{ok:true,installationId:record.installationId})}
+        if(Object.keys(body).some(key=>!['installationId','endpoint'].includes(key)))return json(res,400,{error:'invalid_push_request'});return json(res,200,{ok:true,removed:await pushStore.remove(body)});
+      }
       if(req.method==='POST'&&req.url==='/api/internal/frontend-message'){
         if(!loopback(req.socket.remoteAddress)||req.headers.origin)return json(res,403,{ok:false,error:'Forbidden'});
         if(frontendDeliverySecret.length<32||!secretMatches(req.headers['x-frontend-delivery-secret'],frontendDeliverySecret))return json(res,401,{ok:false,error:'Unauthorized'});
@@ -302,6 +316,8 @@ if(process.argv[1]&&fileURLToPath(import.meta.url)===normalize(process.argv[1]))
   let rscCoordinator=null;if(process.env.QIUQIU_RSC_STATE_PATH){const rscStateStore=createProductionRscStateStore({path:process.env.QIUQIU_RSC_STATE_PATH});await rscStateStore.load();rscCoordinator=createProductionRscCoordinator({stateStore:rscStateStore})}
   const rscObservability=rscCoordinator?createRuntimeObservability({runtime:claudeRuntime,imageStore,coordinator:rscCoordinator}):null;if(rscObservability)console.info(JSON.stringify({component:'rsc_observability',event:'reconciled',snapshot:await rscObservability.reconcile()}));
   const turnQueue=createClaudeTurnQueue({path:process.env.QIUQIU_TURN_QUEUE_PATH||fileURLToPath(new URL('./data/turn-queue.json',import.meta.url)),claudeRuntime,imageStore,rscCoordinator});await turnQueue.initialize();
-  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,frontendDeliverySecret:process.env.DWELL_FRONTEND_DELIVERY_SECRET||'',ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||'',validateModelUpstream:createModelUpstreamPolicy({allowPrivateForTests}),imageStore,photosStore,rscCoordinator,rscObservability,turnQueue});
+  const pushStore=createPushSubscriptionStore({path:process.env.QIUQIU_PUSH_SUBSCRIPTIONS_PATH||fileURLToPath(new URL('./data/push-subscriptions.json',import.meta.url))});await pushStore.initialize();
+  const pushService=createPushService({store:pushStore,vapid:{publicKey:process.env.QIUQIU_VAPID_PUBLIC_KEY,privateKey:process.env.QIUQIU_VAPID_PRIVATE_KEY,subject:process.env.QIUQIU_VAPID_SUBJECT}});
+  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,frontendDeliverySecret:process.env.DWELL_FRONTEND_DELIVERY_SECRET||'',ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||'',validateModelUpstream:createModelUpstreamPolicy({allowPrivateForTests}),imageStore,photosStore,rscCoordinator,rscObservability,turnQueue,pushStore,pushService});
   server.listen(port,host,()=>console.log(`dwell 已醒来：本机 http://127.0.0.1:${port} · 局域网请使用电脑的 IPv4 地址`));
 }
