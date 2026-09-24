@@ -219,15 +219,15 @@ test('streaming view batches many deltas into one frame and keeps the current bu
   assert.equal(bubble.textContent,'');
 
   frames[0]();
-  assert.equal(bubble.textContent,output.content);
-  assert.equal(box.scrollTop,box.scrollHeight-box.clientHeight);
+  assert.equal(bubble.textContent,'');
+  assert.equal(box.scrollTop,700);
   assert.equal(box.streamBubble,bubble);
 
   output.content+='**final**';
   view.update({type:'segment_delta',delta:'**final**'});
   assert.equal(bubble.innerHTML,'');
   view.finish();
-  assert.equal(bubble.textContent,output.content);
+  assert.equal(bubble.textContent,'');
   assert.match(bubble.innerHTML,/<strong>final<\/strong>/);
   assert.deepEqual(cancelled,[2]);
 });
@@ -322,19 +322,18 @@ test('Claude tmux reuses the chat flow but sends only the newest user prompt',as
   assert.equal(api.getState().sessions[0].messages.at(-1).content,'收到');
 });
 
-test('busy Claude tmux send action calls stop with runtimeId and turnId',async()=>{
-  const calls=[];let streamController;
-  const stream=new ReadableStream({start(controller){streamController=controller}});
+test('busy Claude tmux shows A B C immediately and keeps every request independent without Stop',async()=>{
+  const calls=[],streamControllers=[];let ids=0;
   const fetchImpl=async(url,init={})=>{
     calls.push({url,init});
     if(url.includes('/status'))return new Response(JSON.stringify({enabled:true,state:'connected'}),{status:200,headers:{'content-type':'application/json'}});
-    if(url==='/api/chat/stop'){streamController.enqueue(new TextEncoder().encode('{"type":"turn_stopped","turnId":"turn-stop"}\n'));streamController.close();return new Response(JSON.stringify({ok:true,status:'stopped'}),{status:200,headers:{'content-type':'application/json'}})}
-    return new Response(stream,{status:200,headers:{'content-type':'application/x-ndjson'}});
+    return new Response(new ReadableStream({start(controller){streamControllers.push(controller)}}),{status:200,headers:{'content-type':'application/x-ndjson'}});
   };
-  const {api,get}=loadApp({},fetchImpl);api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='长回复';
-  const sending=api.send();await Promise.resolve();streamController.enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-stop"}\n'));await new Promise(resolve=>setTimeout(resolve,0));
-  await api.send();await sending;
-  const stop=calls.find(call=>call.url==='/api/chat/stop');assert.deepEqual(JSON.parse(stop.init.body),{runtimeId:'claude-main',turnId:'turn-stop'});
+  const {api,get}=loadApp({},fetchImpl,{randomUUID:()=>`request-${++ids}`});api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='A';
+  const first=api.send();await Promise.resolve();streamControllers[0].enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-A"}\n'));get('#input').value='B';get('#input').oninput();assert.equal(get('#send').disabled,false);
+  const second=api.send();await Promise.resolve();get('#input').value='C';get('#input').oninput();assert.equal(get('#send').disabled,false);const third=api.send();await Promise.resolve();
+  assert.equal(calls.filter(call=>call.url==='/api/chat').length,3);assert.equal(calls.some(call=>call.url==='/api/chat/stop'),false);assert.equal(api.getState().sessions[0].messages.filter(message=>message.role==='user').map(message=>message.content).join(','),'A,B,C');
+  streamControllers[0].enqueue(new TextEncoder().encode('{"type":"turn_done","turnId":"turn-A"}\n'));streamControllers[0].close();streamControllers[1].enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-B"}\n{"type":"turn_done","turnId":"turn-B"}\n'));streamControllers[1].close();streamControllers[2].enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-C"}\n{"type":"turn_done","turnId":"turn-C"}\n'));streamControllers[2].close();await Promise.all([first,second,third]);assert.equal(api.getState().sending,false);
 });
 
 test('a successful API connection test persists the provider and refreshes composer state',async()=>{
@@ -353,12 +352,12 @@ test('generateId uses crypto.randomUUID when available',()=>{
 test('generateId falls back to crypto.getRandomValues with non-empty unique ids',()=>{
   let seed=0;const {api}=loadApp({},undefined,{getRandomValues:bytes=>{bytes.fill(++seed);return bytes}});
   const first=api.generateId(),second=api.generateId();
-  assert.ok(first);assert.ok(second);assert.notEqual(first,second);assert.match(first,/^[0-9a-f-]+$/);
+  assert.ok(first);assert.ok(second);assert.notEqual(first,second);assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 test('generateId survives an HTTP non-secure context without Web Crypto UUID support',()=>{
   const {api}=loadApp({},undefined,null);const first=api.generateId(),second=api.generateId();
-  assert.ok(first);assert.ok(second);assert.notEqual(first,second);assert.doesNotThrow(()=>api.newChat());assert.ok(api.getState().activeId);
+  assert.ok(first);assert.ok(second);assert.notEqual(first,second);assert.match(first,/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);assert.doesNotThrow(()=>api.newChat());assert.ok(api.getState().activeId);
 });
 
 
@@ -433,18 +432,16 @@ test('iOS rechecks geometry between stable frames even without another viewport 
   timers.get(id)();frames.shift()();frames.shift()();assert.equal(rootStyles['--vv-height'],'500px');
 });
 
-test('bridge-confirmed stop clears UI before EOF and the old EOF cannot clear the next request',async()=>{
+test('one completed request cannot clear a later active request',async()=>{
   const controls=[];let chats=0;
   const fetchImpl=async(url)=>{
     if(url.includes('/status'))return new Response(JSON.stringify({state:'connected'}),{headers:{'content-type':'application/json'}});
-    if(url==='/api/chat/stop')return new Response(JSON.stringify({ok:true,status:'stop_unconfirmed',turnId:'one',stopSent:true,turnReleased:true}),{headers:{'content-type':'application/json'}});
     const id=++chats===1?'one':'two';return new Response(new ReadableStream({start(controller){controls.push(controller);controller.enqueue(new TextEncoder().encode(JSON.stringify({type:'turn_started',turnId:id})+'\n'+JSON.stringify({type:'segment_delta',turnId:id,delta:'保留正文'})+'\n'))}}),{headers:{'content-type':'application/x-ndjson'}});
   };
-  const {api,get}=loadApp({},fetchImpl);api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='first';const first=api.send();await new Promise(r=>setTimeout(r,0));
-  await api.send();assert.equal(api.getState().sending,false);assert.equal(get('#toast').textContent,'已停止');
+  let ids=0;const {api,get}=loadApp({},fetchImpl,{randomUUID:()=>`request-${++ids}`});api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='first';const first=api.send();await new Promise(r=>setTimeout(r,0));
   get('#input').value='second';const second=api.send();await new Promise(r=>setTimeout(r,0));assert.equal(api.getState().activeTurnId,'two');
-  controls[0].close();await first;assert.equal(api.getState().sending,true);assert.equal(api.getState().activeTurnId,'two');
-  controls[1].enqueue(new TextEncoder().encode('{"type":"turn_done","turnId":"two"}\n'));await second;assert.equal(api.getState().sending,false);assert.equal(api.getState().sessions[0].messages[1].content,'保留正文');
+  controls[0].enqueue(new TextEncoder().encode('{"type":"turn_done","turnId":"one"}\n'));controls[0].close();await first;assert.equal(api.getState().sending,true);assert.equal(api.getState().activeTurnId,'two');
+  controls[1].enqueue(new TextEncoder().encode('{"type":"turn_done","turnId":"two"}\n'));await second;assert.equal(api.getState().sending,false);assert.equal(api.getState().sessions[0].messages.filter(message=>message.role==='assistant').map(message=>message.content).join('|'),'保留正文|保留正文');
 });
 
 
@@ -580,27 +577,27 @@ async function liveViewFixture(){
   return {api,get,done,emit,tick,calls,disconnect:()=>source.error(new TypeError('Load failed')),bubble:()=>[...nodes.values()].at(-1),out:()=>api.getState().sessions[0].messages.at(-1),counts:()=>({aborts,cancels})};
 }
 
-test('live stream survives Memory navigation and resumes partial and subsequent output in current DOM',async()=>{
-  const f=await liveViewFixture();assert.equal(f.out().pending,true);assert.equal(f.bubble().classList.contains('thinking'),true);
+test('live stream survives Memory navigation while ordinary text stays hidden until complete',async()=>{
+  const f=await liveViewFixture();assert.equal(f.out().pending,true);assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
   f.api.showMemory();await f.emit({type:'segment_delta',delta:'first'});f.api.showChat();
-  assert.equal(f.bubble().textContent,'first');assert.equal(f.api.getState().activeTurnId,'view-turn');assert.equal(f.api.getState().sending,true);
-  await f.emit({type:'segment_delta',delta:' second'});assert.equal(f.bubble().textContent,'first second');
+  assert.equal(assistantArticles(f.get('#messages').innerHTML),0);assert.equal(f.api.getState().activeTurnId,'view-turn');assert.equal(f.api.getState().sending,true);
+  await f.emit({type:'segment_delta',delta:' second'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
   assert.deepEqual(f.counts(),{aborts:0,cancels:0});assert.equal(f.calls.filter(x=>x==='/api/chat').length,1);assert(!f.calls.includes('/api/chat/stop'));
-  await f.emit({type:'turn_done'});await f.done;assert.equal(f.api.getState().sending,false);assert.equal(f.out().pending,false);
+  await f.emit({type:'turn_done'});await f.done;assert.equal(f.api.getState().sending,false);assert.equal(f.out().pending,false);assert.match(f.get('#messages').innerHTML,/first second/);
 });
 
-test('sidebar and returning Chat preserve active thinking before first body without abort or stop',async()=>{
+test('sidebar and returning Chat preserve a hidden pending ordinary reply without abort or stop',async()=>{
   const f=await liveViewFixture();f.get('#menuBtn').click();f.get('#menuBtn').click();f.api.showChat();
-  assert.equal(f.bubble().classList.contains('thinking'),true);assert.equal(f.out().pending,true);
+  assert.equal(assistantArticles(f.get('#messages').innerHTML),0);assert.equal(f.out().pending,true);
   assert.equal(f.api.getState().activeTurnId,'view-turn');assert.deepEqual(f.counts(),{aborts:0,cancels:0});assert(!f.calls.includes('/api/chat/stop'));
-  await f.emit({type:'segment_delta',delta:'body'});assert.equal(f.bubble().textContent,'body');assert.equal(f.bubble().classList.contains('thinking'),false);
-  await f.emit({type:'turn_done'});await f.done;
+  await f.emit({type:'segment_delta',delta:'body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  await f.emit({type:'turn_done'});await f.done;assert.match(f.get('#messages').innerHTML,/body/);
 });
 
-test('rerender detaches old bubble but later deltas and finalize update only replacement',async()=>{
-  const f=await liveViewFixture(),old=f.bubble();f.api.renderMessages(false);const fresh=f.bubble();assert.notEqual(old,fresh);assert.equal(old.detached,true);
-  await f.emit({type:'segment_delta',delta:'new node body'});assert.equal(fresh.textContent,'new node body');assert.equal(old.textContent,'正在想…');
-  await f.emit({type:'turn_done'});await f.done;assert.equal(fresh.innerHTML,'new node body');
+test('rerender does not expose ordinary deltas and finalizes once into the current DOM',async()=>{
+  const f=await liveViewFixture();f.api.renderMessages(false);assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  await f.emit({type:'segment_delta',delta:'new node body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  await f.emit({type:'turn_done'});await f.done;assert.equal(assistantArticles(f.get('#messages').innerHTML),1);assert.match(f.get('#messages').innerHTML,/new node body/);
 });
 
 test('stream state continues without its chat DOM and never writes into another conversation',async()=>{
@@ -651,10 +648,10 @@ test('presentation: tool deliveries survive Memory/sidebar and destroyed message
   assert.deepEqual(f.counts(),{aborts:0,cancels:0});await f.emit({type:'turn_done'});await f.done;
 });
 
-test('presentation: explicit Stop retains already sent bubbles and clears generating once',async()=>{
+test('presentation: Send never invokes Stop while a reply is active',async()=>{
   const f=await liveViewFixture();await f.emit(toolFrame('one','first'));await f.emit(toolFrame('two','second'));
-  await f.api.send();assert.equal(f.api.getState().sending,false);assert.equal(f.out().toolMessages.length,2);
-  assert.equal(assistantArticles(f.get('#messages').innerHTML),2);assert.equal(f.calls.filter(x=>x==='/api/chat/stop').length,1);
+  await f.api.send();assert.equal(f.api.getState().sending,true);assert.equal(f.out().toolMessages.length,2);
+  assert.equal(assistantArticles(f.get('#messages').innerHTML),2);assert.equal(f.calls.filter(x=>x==='/api/chat/stop').length,0);
   await f.emit({type:'turn_stopped'});await f.done;assert.equal(f.out().toolMessages.length,2);
 });
 

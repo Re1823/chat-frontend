@@ -21,6 +21,26 @@ test('all mobile form controls meet the iOS 16px focus threshold without scaling
   assert.match(html,/<button type="button" id="send" class="send" aria-label="发送"/);
 });
 
+test('composer keeps a 390px-safe emoji microphone send row with a paper plane',()=>{
+  assert.match(html,/id="emojiButton" class="emoji" aria-label="Emoji"/);
+  assert.match(html,/id="emojiButton"[\s\S]*?class="microphone"[\s\S]*?id="send"/);
+  assert.match(html,/id="send"[\s\S]*?M21 3 9\.4 14\.6/);
+  assert.match(css,/\.composer-controls \.attach,\.composer-controls \.emoji,\.composer-controls \.microphone,\.composer-controls \.send/);
+  assert.match(css,/\.composer-controls \.model-pill\{[^}]*max-width:calc\(100% - 186px\)/);
+  assert.match(css,/@media\(max-width:390px\)/);
+  assert.match(css,/overflow-x:hidden/);
+});
+
+test('composer Enter is native newline only and Send has no Stop binding',()=>{
+  assert.match(app,/\$\('#input'\)\.onkeydown=null/);
+  assert.doesNotMatch(app,/\$\('#input'\)\.onkeydown=.*triggerSend/);
+  assert.match(app,/\$\('#emojiButton'\)\.onclick=\(\)=>\{\}/);
+  assert.doesNotMatch(app,/function stopActiveReply/);
+  assert.doesNotMatch(app,/fetch\('\/api\/chat\/stop'/);
+  assert.match(app,/\$\('#send'\)\.innerHTML=chatIcons\.plane/);
+  assert.match(app,/\.disabled=!configured\(\)\|\|!hasDraft\|\|pendingImageUploads>0/);
+});
+
 test('visual viewport resize and scroll drive the shell geometry and toast positioning',()=>{
   assert.match(app,/function syncVisualViewport\(\)/);
   assert.match(app,/visual\?\.height/);

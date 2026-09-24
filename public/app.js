@@ -1,7 +1,8 @@
 const $ = s => document.querySelector(s); const $$ = s => [...document.querySelectorAll(s)];
 const chatIcons={"menu":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 6h14M5 12h14M5 18h14\"/></svg>","file":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z\"/><path d=\"M14 2v6h6M8 13h8M8 17h5\"/></svg>","check":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/><path d=\"m8 12 3 3 5-6\"/></svg>","more":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"5\" r=\"1\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/><circle cx=\"12\" cy=\"19\" r=\"1\"/></svg>","plus":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 5v14M5 12h14\"/></svg>","mic":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"9\" y=\"2\" width=\"6\" height=\"13\" rx=\"3\"/><path d=\"M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8\"/></svg>","wave":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4\"/></svg>","arrow":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 19V5m-6 6 6-6 6 6\"/></svg>","stop":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"7\" y=\"7\" width=\"10\" height=\"10\" rx=\"1\"/></svg>","down":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m8 10 4 4 4-4\"/></svg>","cloud":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M7 18a5 5 0 1 1 1-10 6 6 0 0 1 11 2 4 4 0 0 1 0 8Z\"/></svg>","ai":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 17C3 9 8 4 18 5c1 9-3 14-10 12M6 19 16 8M8 14h5\"/></svg>","user":"<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"8\" r=\"3\"/><path d=\"M5 21v-2a7 7 0 0 1 14 0v2\"/></svg>"};
+chatIcons.plane='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 3 9.4 14.6"/><path d="m21 3-7.3 18-4.3-6.4L3 10.3 21 3Z"/></svg>';
 let generatedIdSequence=0;
-function generateId(){const webCrypto=globalThis.crypto;if(typeof webCrypto?.randomUUID==='function')return webCrypto.randomUUID();const sequence=(++generatedIdSequence).toString(36);if(typeof webCrypto?.getRandomValues==='function'){const bytes=new Uint8Array(16);webCrypto.getRandomValues(bytes);bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}-${sequence}`}return `dwell-${Date.now().toString(36)}-${sequence}-${Math.random().toString(36).slice(2,12)}`}
+function generateId(){const webCrypto=globalThis.crypto;if(typeof webCrypto?.randomUUID==='function')return webCrypto.randomUUID();const bytes=new Uint8Array(16);if(typeof webCrypto?.getRandomValues==='function')webCrypto.getRandomValues(bytes);else{let seed=Date.now()+(++generatedIdSequence)*2654435761;for(let index=0;index<bytes.length;index++){seed=(seed*1664525+1013904223)>>>0;bytes[index]=(seed>>>24)^Math.floor(Math.random()*256)}}bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=[...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`}
 const presets = {
   claude:{name:'Claude',icon:'C',base:'https://api.anthropic.com',model:'claude-sonnet-4-5',protocol:'anthropic'},
   relay:{name:'中转站',icon:'↗',base:'https://api.openai.com/v1',model:'gpt-5',protocol:'chat'},
@@ -23,7 +24,8 @@ const userProfileDefaults={name:'小霏',birthday:'',introduction:''};
 function readUserProfile(){try{return {...userProfileDefaults,...JSON.parse(localStorage.getItem('dwell.userProfile')||'{}')}}catch{return {...userProfileDefaults}}}
 let userProfile=readUserProfile(),userAvatarUrl=readSavedAvatar(userAvatarKey),userEditAvatarUrl=userAvatarUrl,settingsReturnView='chat';
 let activeRequest=null;
-let sending = false, stopping = false, controller, continuationSourceId='', activeTurnId='', tmuxStatus={state:'unknown'}, draftImages=[],pendingImageUploads=0;
+const activeRequests=new Map();
+let sending = false, continuationSourceId='', activeTurnId='', tmuxStatus={state:'unknown'}, draftImages=[],pendingImageUploads=0;
 const profile = id => ({...providerChoices[id], ...(profiles[id] || {})});
 const persist = () => { localStorage.setItem('dwell.profiles',JSON.stringify(profiles)); localStorage.setItem('dwell.provider',activeProvider); localStorage.setItem('dwell.sessions',JSON.stringify(sessions)); localStorage.setItem('dwell.active',activeId); };
 let toastTimer;
@@ -83,7 +85,7 @@ function closeSheets(){ $('#shade').classList.remove('on'); $$('.sheet').forEach
 function closeTransientUI(){closeSheets();closeViewer()}
 function closeSettings(){ closeConnections(); }
 function configured(){ const p=profile(activeProvider); return p.runtime==='claude_tmux'?tmuxStatus.state==='connected':!!(p.key&&p.model); }
-function updateStatus(){ const p=profile(activeProvider),canStop=sending&&p.runtime==='claude_tmux',hasDraft=!!$('#input').value.trim()||draftImages.length>0; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=canStop?stopping:(!configured()||!hasDraft||sending||pendingImageUploads>0); $('#send').innerHTML=canStop?chatIcons.stop:hasDraft?chatIcons.arrow:chatIcons.wave; $('#send').setAttribute?.('aria-label',canStop?'停止回复':'发送'); }
+function updateStatus(){ const p=profile(activeProvider),hasDraft=!!$('#input').value.trim()||draftImages.length>0; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=!configured()||!hasDraft||pendingImageUploads>0; $('#send').innerHTML=chatIcons.plane; $('#send').setAttribute?.('aria-label','发送'); }
 async function refreshRuntimeStatus(){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);try{const r=await fetch('/api/runtimes/claude-tmux/status',{signal:controller.signal}),body=await r.text();let data;try{data=JSON.parse(body)}catch{throw new Error('Claude runtime 状态响应格式无效')}if(!r.ok)throw new Error(data.error||`Claude runtime 状态请求失败（HTTP ${r.status}）`);if(!data||typeof data.state!=='string')throw new Error('Claude runtime 状态响应缺少 state');tmuxStatus=data}catch(e){tmuxStatus={state:'unreachable',error:e.name==='AbortError'?'Claude runtime 状态请求超时':e.message}}finally{clearTimeout(timer)}updateStatus();return tmuxStatus}
 function current(){ return sessions.find(s=>s.id===activeId); }
 function newChat(){ showChat(); const s={id:generateId(),title:'新的对话',provider:activeProvider,created:Date.now(),messages:[]}; sessions.unshift(s); activeId=s.id; persist(); renderAll(); $('#input').focus(); }
@@ -166,16 +168,18 @@ function visibleMessageSearchText(message){
   if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(ordinaryAssistantPresentationText(message.content));
   return visible.join('\n');
 }
-function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.pending)}
+function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.toolMessages?.length||message?.thoughtProcess?.items?.length)}
 function localDayKey(value){const date=value instanceof Date?value:new Date(value);return Number.isFinite(date.getTime())?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`:''}
 function visibleMessageTimestamp(message){const raw=message?.createdAt,date=typeof raw==='number'?new Date(raw):new Date(String(raw||''));return hasVisibleChatPresentation(message)&&Number.isFinite(date.getTime())?date.getTime():null}
 function dayDividerMarkup(value){const date=new Date(value),pad=n=>String(n).padStart(2,'0');return `<div class="chat-day-divider" data-day="${localDayKey(date)}"><span></span><time>${date.getMonth()+1}月${date.getDate()}日 · ${pad(date.getHours())}:${pad(date.getMinutes())}</time><span></span></div>`}
 function findChatSearchResults(messages,query){const needle=String(query||'').trim().normalize('NFC').toLocaleLowerCase();if(!needle)return[];return (messages||[]).flatMap((message,index)=>visibleMessageSearchText(message).normalize('NFC').toLocaleLowerCase().includes(needle)?[{index,text:visibleMessageSearchText(message)}]:[])}
 function renderChatMessage(message,previous,sourceIndex=-1){
   const albumEvents=(message.albumEvents||[]).map(safeAlbumSaved).filter(Boolean);
-  if(message.role==='assistant'&&!message.pending&&!message.content&&!message.images?.length&&!message.toolMessages?.length&&!message.thoughtProcess?.items?.length&&!message.delivery?.notice&&!albumEvents.length)return '';
+  const ordinaryHidden=message.role==='assistant'&&(message.pending||message.bodyComplete===false);
+  if(message.role==='assistant'&&!message.content&&!message.images?.length&&!message.toolMessages?.length&&!message.thoughtProcess?.items?.length&&!message.delivery?.notice&&!albumEvents.length)return '';
+  if(ordinaryHidden&&!message.toolMessages?.length&&!message.thoughtProcess?.items?.length&&!message.delivery?.notice&&!albumEvents.length)return '';
   let body='';
-  if(!message.toolMessages?.length){if(message.pending||message.content||message.images?.length||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(message,previous,null,sourceIndex)}
+  if(!message.toolMessages?.length){if(message.pending||message.content||message.images?.length||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(ordinaryHidden?{...message,content:''}:message,previous,null,sourceIndex)}
   else{const visible=message.toolMessages.map((item,index)=>index?item:{...item,thoughtProcess:message.thoughtProcess,turnId:message.turnId});if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(message);body=visible.map((item,index)=>renderMessageRow(item,index?visible[index-1]:previous,index===visible.length-1?message:null,sourceIndex)).join('')}
   return body+albumEvents.map(event=>albumSavedMarkup(event,sourceIndex)).join('');
 }
@@ -281,7 +285,7 @@ function applyTurnEvent(out,event){
   }
   if(event.type==='album_saved'&&event.turnId===out.turnId){const saved=safeAlbumSaved(event);if(saved){out.albumEvents??=[];if(!out.albumEvents.some(item=>item.photo?.photoId===saved.photo.photoId))out.albumEvents.push(saved);persist()}}
   if(event.type==='thought_process'&&event.turnId===out.turnId){out.thoughtProcess={turnId:event.turnId,hasThoughtProcess:!!event.items?.length,items:Array.isArray(event.items)?event.items:[]};persist();if(openThoughtTurn===event.turnId)renderThoughtSheet(out.thoughtProcess)}
-  if(event.type==='segment_delta'||(!event.type&&event.delta)){out.content+=event.delta||'';out.bodyComplete=false;if(out.content)out.pending=false;}
+  if(event.type==='segment_delta'||(!event.type&&event.delta)){out.content+=event.delta||'';out.bodyComplete=false;}
   if(['segment_done','turn_done','turn_stopped','turn_error'].includes(event.type))out.bodyComplete=true;
   if(event.type==='turn_stopped')out.stopped=true;
   if(event.type==='turn_error'){const error=new Error(event.error||'回复中断');error.turnError=true;throw error}
@@ -301,14 +305,13 @@ function createStreamingView(out,initialFollow=keepBottomThroughViewportResize||
   const flush=()=>{
     framePending=false;frameHandle=0;if(!dirty)return;dirty=false;
     if(out.toolMessages?.length||out.thoughtProcess?.items?.length||out.albumEvents?.length){if(current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scrollMessagesToBottom($('#messages'));}return;}
-    const bubble=currentBubble();
-    if(bubble){bubble.textContent=ordinaryAssistantPresentationText(out.content)||'正在想…';bubble.classList.toggle('thinking',!!out.pending);}
-    if(bubble&&activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scrollMessagesToBottom($('#messages'));
+    // Ordinary assistant text is buffered until the message is complete.
+    // Tool messages, albums and Thought Process retain their typed-event UI.
   };
   box.classList.add('streaming');box.addEventListener?.('scroll',onScroll,{passive:true});
   return {
     update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
-    finish(){out.pending=false;out.bodyComplete=true;if(framePending)cancelFrame(frameHandle);framePending=false;dirty=true;flush();const bubble=out.toolMessages?.length||out.thoughtProcess?.items?.length||out.albumEvents?.length?null:currentBubble();if(bubble){const content=ordinaryAssistantPresentationText(out.content);if(content)bubble.innerHTML=markup(content);else if(current()?.messages.includes(out))renderMessages(false)}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
+    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal){dirty=true;flush();const bubble=currentBubble(),content=ordinaryAssistantPresentationText(out.content);if(bubble&&content)bubble.innerHTML=markup(content);if(current()?.messages.includes(out))renderMessages(false)}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
     isFollowing:()=>follow
   };
 }
@@ -320,8 +323,7 @@ function connectionMarkup(message){
 }
 function bindRecoveryActions(){
   $$('[data-recovery]').forEach(button=>button.onclick=()=>{
-    if(button.dataset.recovery==='status'){if(activeRequest?.clientRequestId===button.dataset.request)recoverConnection(activeRequest);return}
-    if(sending)return;
+    if(button.dataset.recovery==='status'){const request=activeRequests.get(button.dataset.request);if(request)recoverConnection(request);return}
     const session=current(),index=session?.messages.findIndex(m=>m.delivery?.clientRequestId===button.dataset.request),message=session?.messages[index];
     if(!message?.delivery?.retryAllowed||index<1)return;
     message.delivery.retryAllowed=false;persist();$('#input').value=session.messages[index-1].content;draftImages=safeMessageImages(session.messages[index-1].images);renderAttachmentDraft();autoSize();triggerSend();
@@ -345,32 +347,38 @@ function applyRequestEvent(request,event){
   if(Number.isSafeInteger(event.seq)){request.lastAppliedSeq=event.seq;saveDelivery(request,request.out.delivery?.notice||'',request.out.delivery?.retryAllowed||false)}
   return true;
 }
-function scheduleRecovery(request){if(activeRequest!==request||request.phase!=='connection_lost')return;clearTimeout(request.recoveryTimer);request.recoveryTimer=setTimeout(()=>recoverConnection(request),1500)}
+function requestIsActive(request){return !!request&&activeRequests.get(request.clientRequestId)===request}
+function registerRequest(request){activeRequests.set(request.clientRequestId,request);activeRequest=request;sending=true;updateStatus()}
+function latestActiveRequest(){return [...activeRequests.values()].at(-1)||null}
+function ensureAssistantPresentationPosition(request){if(request.presented)return;const session=sessions.find(value=>value.id===request.sessionId),index=session?.messages.indexOf(request.out)??-1;if(index<0)return;session.messages.splice(index,1);request.out.createdAt=Date.now();session.messages.push(request.out);request.presented=true}
+function scheduleRecovery(request){if(!requestIsActive(request)||request.phase!=='connection_lost')return;clearTimeout(request.recoveryTimer);request.recoveryTimer=setTimeout(()=>recoverConnection(request),1500)}
 function unrecoverableTurn(request){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋已经完成回复，但刚才网络中断，内容没有完整传回来。')}
 const requestRecoveryDelays=[0,100,200,400,800,1200];
 async function recoverByClientRequestId(request){
-  if(activeRequest!==request||request.turnId||!request.clientRequestId||request.runtime!=='claude_tmux')return false;
-  let expired=false;
+  if(!requestIsActive(request)||request.turnId||!request.clientRequestId||request.runtime!=='claude_tmux')return false;
+  let expired=false,pending=false;
   for(const delay of requestRecoveryDelays){
-    if(activeRequest!==request)return false;
+    if(!requestIsActive(request))return false;
     if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
     const check=new AbortController(),timer=setTimeout(()=>check.abort(),2000);
     try{
       const response=await fetch('/api/chat/recovery/by-request/'+encodeURIComponent(request.clientRequestId),{signal:check.signal,cache:'no-store'}),status=await response.json();
-      if(activeRequest!==request)return false;
+      if(!requestIsActive(request))return false;
       if(status.status==='FOUND'&&typeof status.turnId==='string'){
         request.turnId=status.turnId;activeTurnId=status.turnId;request.phase='connection_lost';saveDelivery(request);await recoverConnection(request);return true;
       }
       if(status.status==='EXPIRED'){expired=true;break}
+      if(status.status==='PENDING')pending=true;
       if(!['PENDING','NOT_FOUND'].includes(status.status))break;
     }catch{}
     finally{clearTimeout(timer)}
   }
-  if(activeRequest===request){finishGenerating(request);showConnectionNotice(request,expired?'网络刚刚断了一下，这条消息的恢复记录已经过期。重新发送可能重复送达。':'网络刚刚断了一下，这条消息可能没有发出去。重新发送可能重复送达。',true)}
+  if(requestIsActive(request)&&pending&&!expired){showConnectionNotice(request,'消息已排队，等待秋秋处理。');request.recoveryTimer=setTimeout(()=>recoverByClientRequestId(request),1500);return true}
+  if(requestIsActive(request)){finishGenerating(request);showConnectionNotice(request,expired?'网络刚刚断了一下，这条消息的恢复记录已经过期。重新发送可能重复送达。':'网络刚刚断了一下，这条消息可能没有发出去。重新发送可能重复送达。',true)}
   return false;
 }
 async function recoverConnection(request){
-  if(activeRequest!==request||request.phase!=='connection_lost'||!request.turnId||request.runtime!=='claude_tmux')return;
+  if(!requestIsActive(request)||request.phase!=='connection_lost'||!request.turnId||request.runtime!=='claude_tmux')return;
   if(request.recoveryPromise)return request.recoveryPromise;
   if(request.lastRecoveryAt&&Date.now()-request.lastRecoveryAt<1000)return;
   request.lastRecoveryAt=Date.now();
@@ -380,16 +388,16 @@ async function recoverConnection(request){
       connectionLog('recovery_events_query',request,{afterSeq:request.lastAppliedSeq||0});
       const response=await fetch('/api/chat/turn/'+encodeURIComponent(request.turnId)+'/events?afterSeq='+(request.lastAppliedSeq||0),{signal:check.signal,cache:'no-store'});
       const status=await response.json();
-      if(activeRequest!==request)return;
+      if(!requestIsActive(request))return;
       if(!response.ok||status.turnId!==request.turnId||status.recoverable===false||!Array.isArray(status.events)){unrecoverableTurn(request);return}
-      for(const event of status.events){if(activeRequest!==request)return;const applied=applyRequestEvent(request,event);if(applied!==false){if(!request.view&&['turn_started','segment_delta','segment_done','assistant_message','album_saved'].includes(event.type)){request.out.pending=true;request.view=createStreamingView(request.out)}request.view?.update(event);if(event.type==='segment_delta'||event.type==='assistant_message'||event.type==='album_saved')request.phase='connection_lost';if(['turn_done','turn_stopped'].includes(event.type)){request.phase='finished';if(request.out.delivery)request.out.delivery.notice='';finishGenerating(request,event.type==='turn_stopped');return}}}
+      for(const event of status.events){if(!requestIsActive(request))return;const applied=applyRequestEvent(request,event);if(applied!==false){if(!request.view&&['turn_started','segment_delta','segment_done','assistant_message','album_saved'].includes(event.type)){request.out.pending=true;request.view=createStreamingView(request.out)}request.view?.update(event);if(event.type==='segment_delta'||event.type==='assistant_message'||event.type==='album_saved')request.phase='connection_lost';if(['turn_done','turn_stopped'].includes(event.type)){request.phase='finished';if(request.out.delivery)request.out.delivery.notice='';finishGenerating(request,event.type==='turn_stopped');return}}}
       connectionLog('recovery_result',request,{state:status.state,receivedByRuntime:status.receivedByRuntime,latestSeq:status.latestSeq});
-      if(activeRequest!==request)return;
+      if(!requestIsActive(request))return;
       if(status.state==='not_delivered'&&status.receivedByRuntime===false){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'这条消息没有成功送达。',true)}
       else if(status.finished)unrecoverableTurn(request);
       else{showConnectionNotice(request,status.receivedByRuntime===true?'秋秋已经收到，回复仍在继续。':'连接中断，正在确认这条消息是否已经送达。');scheduleRecovery(request)}
     }catch(error){
-      if(activeRequest!==request)return;
+      if(!requestIsActive(request))return;
       if(error.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。');return}
       showConnectionNotice(request,'网络刚刚断了一下，秋秋还在。暂时无法确认回复状态，可稍后查看状态。');scheduleRecovery(request)
     }finally{clearTimeout(timer)}
@@ -399,7 +407,7 @@ async function recoverConnection(request){
 async function handleConnectionLoss(request,error){
   if(request.stopped||request.finished)return;
   const hadTurn=!!request.turnId;request.phase='connection_lost';
-  request.view?.finish();request.view=null;
+  request.view?.finish(false);request.view=null;
   connectionLog('connection_lost',request,{hadTurn});
   if(error.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。');return}
   if(!hadTurn){
@@ -410,38 +418,27 @@ async function handleConnectionLoss(request,error){
   else{finishGenerating(request);showConnectionNotice(request,'网络刚刚断了一下，回复没有完整传回来。')}
 }
 function finishGenerating(request,stopped=false){
-  if(activeRequest!==request)return;
+  if(!requestIsActive(request))return;
   clearTimeout(request.recoveryTimer);
   if(request.phase!=='connection_lost')request.phase='finished';
+  request.out.pending=false;
   if(stopped){request.phase='finished';request.stopped=true;request.out.stopped=true;request.out.pending=false;if(request.out.delivery)request.out.delivery.notice='已停止'}
+  if(request.out.content||request.out.toolMessages?.length||request.out.albumEvents?.length||request.out.thoughtProcess?.items?.length)ensureAssistantPresentationPosition(request);
   request.view?.finish();request.finished=true;saveDelivery(request,request.out.delivery?.notice||'');
-  activeRequest=null;sending=false;stopping=false;activeTurnId='';
+  activeRequests.delete(request.clientRequestId);activeRequest=latestActiveRequest();sending=activeRequests.size>0;activeTurnId=[...activeRequests.values()].find(value=>value.turnId)?.turnId||'';
   persist();renderSessions();updateStatus();
 }
-async function stopActiveReply(){
-  const p=profile(activeProvider),request=activeRequest,turnId=activeTurnId;
-  if(!sending||stopping||p.runtime!=='claude_tmux'||!turnId)return;
-  stopping=true;updateStatus();
-  try{
-    const r=await fetch('/api/chat/stop',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({runtimeId:p.runtimeId,turnId})});
-    const data=await r.json();
-    if(!r.ok||!data.ok)throw new Error('暂未确认停止，请稍后重试');
-    const terminal=['stopped','already_stopped','no_active_turn'].includes(data.status)||(data.status==='stop_unconfirmed'&&data.turnReleased===true&&data.stopSent===true);
-    if(terminal&&request){finishGenerating(request,true);request.controller.abort();toast('已停止')}
-  }catch(e){toast('暂未确认停止，请稍后重试')}
-  finally{if(activeRequest===request){stopping=false;updateStatus()}}
-}
-async function send(){ const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(sending){if(profile(activeProvider).runtime==='claude_tmux')await stopActiveReply();return} if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()}; s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now()}); $('#input').value='';draftImages=[];renderAttachmentDraft();autoSize(); sending=true;activeTurnId='';persist();renderAll(followStream); controller=new AbortController(); const request={controller,out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'pre_turn',lastAppliedSeq:0,clientRequestId:generateId(),runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};activeRequest=request;
+async function send(){ const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];renderAttachmentDraft();autoSize(); persist();renderAll(followStream); const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);
   const p=profile(activeProvider); const apiMessages=[]; if(p.system)apiMessages.push({role:'system',content:p.system}); if(s.bridge)apiMessages.push({role:'system',content:`以下是从上一段会话提炼、由用户确认的续窗启动包。把它作为背景，不要声称看过未包含的旧会话。\n\n${s.bridge}`}); apiMessages.push(...s.messages.filter(m=>!m.pending).map(({role,content})=>({role,content})));
   const requestMessages=p.runtime==='claude_tmux'?[{role:'user',content:text}]:apiMessages;
-  const out=s.messages.at(-1),streamView=createStreamingView(out,followStream);request.view=streamView;saveDelivery(request);connectionLog('fetch_opened',request);try{ const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)}),signal:controller.signal}); if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))} connectionLog('stream_opened',request); await readTurnStream(r,out,event=>{if(event.type==='turn_started'){request.turnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(event.type==='assistant_message'){request.phase='streaming';saveDelivery(request);persist();}streamView.update(event);if(['turn_done','turn_stopped'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event));
+  const out=request.out,streamView=createStreamingView(out,followStream);request.view=streamView;saveDelivery(request);connectionLog('fetch_opened',request);try{ const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)}),signal:request.controller.signal}); if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))} connectionLog('stream_opened',request); await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event));
   }catch(e){out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);renderAttachmentDraft()}await handleConnectionLoss(request,e)}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
 async function triggerSend(){try{await send()}catch(e){toast('网络刚刚断了一下，请稍后再试。')}}
 function preserveComposerFocusOnSend(event){if(document.activeElement===$('#input'))event.preventDefault()}
 function autoSize(){const t=$('#input');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';updateStatus();if($('#toast').classList.contains?.('on'))positionToast()}
 $('#settingsBtn').onclick=openUserHub; $('#welcomeSetup').onclick=openSettings; $('#modelBtn').onclick=()=>{if(profile(activeProvider).runtime!=='claude_tmux')openSettings()}; $('#closeSettings').onclick=closeConnections; $('#closeContinue').onclick=closeSheets;$('#shade').onclick=()=>$('#addToChatSheet').classList.contains('on')?closeAddToChat():closeSheets(); $('#menuBtn').onclick=()=>{$('aside').classList.toggle('on')}; $('#asideClose').onclick=()=>{$('aside').classList.remove('on')}; $('#send').onpointerdown=preserveComposerFocusOnSend; $('#send').onclick=triggerSend; $('#startContinue').onclick=startContinuation; $('#backupContinue').onclick=backupContinuation; $('#continueDraft').oninput=()=>updateContinueStats(buildContinuation(sessions.find(s=>s.id===continuationSourceId)||{messages:[],title:''}).kept,(sessions.find(s=>s.id===continuationSourceId)?.messages||[]).length);
 $('#attachImage').onclick=openAddToChat;$('#attachmentInput').onchange=uploadImages;$('#fileInput').onchange=uploadImages;$('#cameraInput').onchange=uploadImages;
-$('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();triggerSend()}}; $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
+$('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=null; $('#emojiButton').onclick=()=>{}; $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
 $('#input').onfocus=()=>{if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',cancelViewportBottomAnchor,{passive:true});$('#messages').addEventListener?.('wheel',event=>{if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});
 $('#chatNav').onclick=showChat;$('#memoryNav').onclick=showMemory;$('#memoryMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#closeMemoryDetail').onclick=closeMemoryDetail;$('#openMemoryFilter').onclick=openMemoryFilters;$('#closeMemoryFilter').onclick=closeSheets;$('#applyMemoryFilter').onclick=applyMemoryFilters;$('#clearMemoryFilter').onclick=clearMemoryFilters;$$('#memoryFilters button').forEach(button=>button.onclick=()=>{memoryState.activePrimaryFilter=button.dataset.filter;$$('#memoryFilters button').forEach(item=>item.classList.toggle('on',item===button));renderMemoryList()});$('#memorySort').onchange=event=>{memoryState.sortMode=event.target.value;renderMemoryList()};$('#memorySearch').oninput=event=>{memoryState.searchQuery=event.target.value;clearTimeout(memorySearchTimer);memorySearchTimer=setTimeout(()=>searchMemory(event.target.value),300)};
 $('#memorySearch').onfocus=$('#memorySearch').onblur=scheduleVisualViewportSync;$('#memoryBody').addEventListener?.('scroll',()=>{memoryState.scrollPosition=$('#memoryBody').scrollTop},{passive:true});
@@ -464,7 +461,7 @@ $('#messages').addEventListener?.('click',event=>{const target=event.target.clos
 $('#viewerStage').addEventListener?.('touchstart',event=>{viewerStartX=event.changedTouches[0]?.clientX||0},{passive:true});$('#viewerStage').addEventListener?.('touchend',event=>{const delta=(event.changedTouches[0]?.clientX||0)-viewerStartX;if(Math.abs(delta)<45)return;viewerIndex=Math.max(0,Math.min(viewerItems.length-1,viewerIndex+(delta<0?1:-1)));renderViewer()},{passive:true});
 
 // Backgrounding and offline events never cancel or resend the chat POST.
-const resumeConnectionCheck=()=>{if(document.visibilityState==='hidden'||globalThis.navigator?.onLine===false)return;if(activeRequest?.phase==='connection_lost')recoverConnection(activeRequest)};
+const resumeConnectionCheck=()=>{if(document.visibilityState==='hidden'||globalThis.navigator?.onLine===false)return;for(const request of activeRequests.values())if(request.phase==='connection_lost')recoverConnection(request)};
 globalThis.addEventListener?.('online',resumeConnectionCheck);
 globalThis.addEventListener?.('pageshow',resumeConnectionCheck);
 globalThis.addEventListener?.('focus',resumeConnectionCheck);
@@ -472,12 +469,12 @@ document.addEventListener?.('visibilitychange',resumeConnectionCheck);
 // Safari may discard the page while a reply is in flight. Restore only its ID,
 // never the POST; expired server metadata must remain an unknown delivery.
 function restoreInterruptedConnection(){
-  const session=current(),out=session?.messages.at(-1),d=out?.delivery;
-  if(activeRequest||!d||d.phase==='finished'||d.retryAllowed||(!d.turnId&&!d.clientRequestId)||profile(session.provider).runtime!=='claude_tmux')return;
-  out.pending=true;
-  const request={controller:new AbortController(),out,userMessage:[...session.messages].reverse().find(message=>message.role==='user')||null,stopped:false,finished:false,phase:'connection_lost',lastAppliedSeq:Number.isSafeInteger(d.lastAppliedSeq)?d.lastAppliedSeq:0,clientRequestId:d.clientRequestId,turnId:d.turnId,runtime:'claude_tmux',runtimeId:d.runtimeId,sessionId:session.id};
-  activeRequest=request;activeTurnId=d.turnId||'';sending=true;updateStatus();
-  if(d.turnId)recoverConnection(request);else recoverByClientRequestId(request);
+  const session=current();if(!session||profile(session.provider).runtime!=='claude_tmux')return;
+  for(let index=0;index<session.messages.length;index++){
+    const out=session.messages[index],d=out?.delivery;if(out?.role!=='assistant'||!d||d.phase==='finished'||d.retryAllowed||(!d.turnId&&!d.clientRequestId)||activeRequests.has(d.clientRequestId))continue;
+    out.pending=true;const request={controller:new AbortController(),out,userMessage:[...session.messages.slice(0,index)].reverse().find(message=>message.role==='user')||null,stopped:false,finished:false,phase:'connection_lost',lastAppliedSeq:Number.isSafeInteger(d.lastAppliedSeq)?d.lastAppliedSeq:0,clientRequestId:d.clientRequestId,turnId:d.turnId,runtime:'claude_tmux',runtimeId:d.runtimeId,sessionId:session.id};registerRequest(request);
+    if(d.turnId)recoverConnection(request);else recoverByClientRequestId(request);
+  }
 }
 restoreInterruptedConnection();
 async function recoverLegacySuppressedFinals(){return false}

@@ -35,7 +35,7 @@ export function createRootBridgeTransport({request=createRootBridgeClient(),send
   const operationId=value=>{if(!/^[A-Za-z0-9_-]{16,128}$/.test(value||''))throw bridgeError('invalid carryover operation',400);return value};
   return {
     async hasSession(){return Boolean((await request({op:'status'})).running)},
-    async inspectSession(){const status=await request({op:'status'});return {exists:Boolean(status.running),alive:Boolean(status.running),panes:[]}},
+    async inspectSession(){const status=await request({op:'status'});return {exists:Boolean(status.running),alive:Boolean(status.running),active:status.active===true,activeTurnId:status.activeTurnId||null,panes:[]}},
     async createSession(){const result=await request({op:'ensure'});return {created:Boolean(result.created)}},
     async sendPrompt({turnId,prompt}){await sendRequest({op:'send',turnId,prompt})},
     async thoughtSnapshot(turnId){return thoughtRequest({op:'thought_snapshot',turnId})},

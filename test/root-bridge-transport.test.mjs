@@ -25,7 +25,7 @@ test('transport maps methods to the five fixed bridge operations without root pa
   const sendRequest=async message=>{sendCalls.push(message);return {ok:true}};
   const transport=createRootBridgeTransport({request,sendRequest});
   assert.equal(await transport.hasSession('ignored'),true);
-  assert.deepEqual(await transport.inspectSession('ignored'),{exists:true,alive:true,panes:[]});
+  assert.deepEqual(await transport.inspectSession('ignored'),{exists:true,alive:true,active:false,activeTurnId:null,panes:[]});
   assert.deepEqual(await transport.createSession({sessionName:'evil',workspace:'/tmp',command:'sh',args:['-c','id']}),{created:true});
   await transport.sendPrompt({sessionName:'evil',turnId:'turn-1',prompt:'hello'});
   await transport.interrupt('evil','turn-1');
@@ -41,6 +41,11 @@ test('transport gives send a dedicated five second client while status keeps the
   await transport.hasSession();
   await transport.sendPrompt({turnId:'turn-2',prompt:'hello'});
   assert.deepEqual(timeouts,[1500,5000]);
+});
+
+test('transport exposes the authoritative bridge turn owner to the queue gate',async()=>{
+  const transport=createRootBridgeTransport({request:async()=>({ok:true,running:true,active:true,activeTurnId:'turn-live'})});
+  assert.deepEqual(await transport.inspectSession(),{exists:true,alive:true,active:true,activeTurnId:'turn-live',panes:[]});
 });
 
 test('thought snapshots use their dedicated client',async()=>{

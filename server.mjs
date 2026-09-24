@@ -24,6 +24,7 @@ import { createPhotosStore } from './src/photos/photos-store.mjs';
 import { createPhotosMcpHandler, photosMcpTools } from './src/photos/photos-mcp.mjs';
 import {createProductionRscStateStore,createProductionRscCoordinator} from './src/runtimes/rsc/production-state.mjs';
 import {createRuntimeObservability} from './src/runtimes/rsc/runtime-observability.mjs';
+import {createDurableTurnQueue} from './src/turns/durable-turn-queue.mjs';
 
 const root = fileURLToPath(new URL('./public/', import.meta.url));
 const port = Number(process.env.PORT || 4173);
@@ -80,7 +81,41 @@ const secretMatches=(actual,expected)=>{
 const CLAUDE_CHANNEL_TEST_PROMPT='这是前端 Claude 通道测试。不要调用任何工具，不要读取或修改文件，不要调用 Ombre Brain，只回复：前端通道测试成功';
 const CLIENT_REQUEST_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null }={}){
+const internalPromptFor=(prompt,images)=>images.length?`<frontend_image_context>\nThis frontend turn includes ${images.length} image attachment${images.length===1?'':'s'} available only through mcp__qiuqiu-frontend__read_frontend_image. Image IDs: ${images.map(image=>image.imageId).join(', ')}. Read them when needed to understand this turn.\n</frontend_image_context>${prompt?`\n\n${prompt}`:''}`:prompt;
+
+export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoordinator=null,log=record=>console.info(JSON.stringify(record)),...options}){
+  const canDispatch=async()=>{
+    if(rscCoordinator&&(await rscCoordinator.snapshot()).state!=='OPEN')return false;
+    if(claudeRuntime.hasActiveTurn())return false;
+    if(claudeRuntime.canAcceptQueuedTurn&&!await claudeRuntime.canAcceptQueuedTurn())return false;
+    try{return (await claudeRuntime.status()).state==='connected'}catch{return false}
+  };
+  const dispatch=async(item,emit)=>{
+    const reservation=claudeRuntime.reserveRequest?.(item.clientRequestId);
+    if(reservation&&!reservation.created)throw Object.assign(new Error('duplicate_client_request'),{retryableBeforeDispatch:false});
+    let terminalResolve,terminalEvent=null,started=false;
+    const terminal=new Promise(resolve=>{terminalResolve=resolve});
+    const forward=event=>{if(event?.type==='turn_started')started=true;emit(event);if(claudeRuntime.isTerminalEvent(event)){terminalEvent=event;terminalResolve(event)}};
+    const run=async()=>{
+      await claudeRuntime.preflight(item.runtimeId);
+      const images=item.imageIds?.length?await imageStore?.bind(item.imageIds,{turnId:item.turnId,clientRequestId:item.clientRequestId}):[];
+      imageStore?.leaseTurn?.(item.turnId,130000);
+      await claudeRuntime.chat({runtimeId:item.runtimeId,prompt:internalPromptFor(item.prompt,images||[]),emit:forward,clientRequestId:item.clientRequestId,turnId:item.turnId,images:images||[]});
+    };
+    try{
+      if(rscCoordinator)await rscCoordinator.submit({clientRequestId:item.clientRequestId,turnId:item.turnId,imageIds:item.imageIds||[],conversationId:item.conversationId},run);else await run();
+      await terminal;
+    }catch(error){
+      if(terminalEvent)return;
+      if(!started)claudeRuntime.releaseRequest?.(item.clientRequestId);
+      if(!started&&[404,409,503,504].includes(Number(error?.statusCode)))error.retryableBeforeDispatch=true;
+      throw error;
+    }
+  };
+  return createDurableTurnQueue({path,dispatch,canDispatch,log,...options});
+}
+
+export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null }={}){
   const ombreRoutes=ombreService?createOmbreDashboardRoutes(ombreService):null;
   const photosMcpHandler=photosStore&&imageStore?createPhotosMcpHandler({photosStore,currentTurnId:()=>claudeRuntime?.activeTurnId?.(),readCurrentTurnImage:(imageId,turnId)=>imageStore.readForTurn(imageId,turnId),sendSavedPhoto:(photo,text)=>claudeRuntime.deliverSavedPhoto(photo,text),emitAlbumSaved:photo=>claudeRuntime.emitAlbumSaved(photo)}):null;
   const server=http.createServer(async(req,res)=>{
@@ -138,8 +173,13 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         res.setHeader('cache-control','no-store');
         const clientRequestId=decodeURIComponent(requestRecoveryMatch[1]);
         if(!CLIENT_REQUEST_ID_PATTERN.test(clientRequestId))return json(res,400,{status:'INVALID'});
-        const result=rscObservability?await rscObservability.recovery(async()=>claudeRuntime?.requestRecovery?.(clientRequestId)||{status:'NOT_FOUND'}):claudeRuntime?.requestRecovery?.(clientRequestId)||{status:'NOT_FOUND'};
+        let result=rscObservability?await rscObservability.recovery(async()=>claudeRuntime?.requestRecovery?.(clientRequestId)||{status:'NOT_FOUND'}):claudeRuntime?.requestRecovery?.(clientRequestId)||{status:'NOT_FOUND'};
+        if(result.status==='NOT_FOUND'&&turnQueue)result=turnQueue.recovery(clientRequestId);
         return json(res,result.status==='NOT_FOUND'?404:200,result);
+      }
+      if(req.method==='GET'&&req.url==='/api/chat/queue/status'){
+        res.setHeader('cache-control','no-store');const state=turnQueue?.snapshot?.()||{initialized:false,pending:0,active:0};
+        return json(res,200,{initialized:state.initialized,pending:state.pending,active:state.active,oldestPendingAt:state.oldestPendingAt||null});
       }
       const replayUrl=new URL(req.url,'http://local');
       const turnEventsMatch=req.method==='GET'&&replayUrl.pathname.match(/^\/api\/chat\/turn\/([A-Za-z0-9_-]{1,128})\/events$/);
@@ -199,14 +239,26 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         if(imageIds!==undefined&&(!Array.isArray(imageIds)||imageIds.length>4||imageIds.some(id=>!IMAGE_ID_PATTERN.test(String(id||'')))))return json(res,400,{error:'invalid_image_ids'});
         if(!prompt.trim()&&!(imageIds?.length))return json(res,400,{error:'当前 user prompt 或图片不能为空'});
         if(imageIds?.length&&!imageStore)return json(res,503,{error:'image_upload_unavailable'});
-        const turnId=randomUUID(),clientRequestId=/^[A-Za-z0-9_-]{1,128}$/.test(body.clientRequestId||'')?body.clientRequestId:null;
+        const clientRequestId=/^[A-Za-z0-9_-]{1,128}$/.test(body.clientRequestId||'')?body.clientRequestId:null;
         if(imageIds?.length&&!clientRequestId)return json(res,400,{error:'image_turn_requires_client_request_id'});
+        if(turnQueue){
+          if(!clientRequestId)return json(res,400,{error:'client_request_id_required'});
+          const buffered=[],subscriber={ended:false,emit:event=>buffered.push(event),end:()=>{subscriber.ended=true}};
+          const result=await turnQueue.enqueue({clientRequestId,runtimeId:body.config.runtimeId,conversationId:body.config.runtimeId,prompt,imageIds:imageIds||[]},subscriber);
+          res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'keep-alive'});
+          subscriber.emit=event=>{if(!res.destroyed&&!res.writableEnded)writeTurnEvent(res,'ndjson',event)};
+          subscriber.end=()=>{if(!res.writableEnded)res.end()};
+          for(const event of buffered)subscriber.emit(event);if(subscriber.ended)subscriber.end();
+          res.once('close',()=>turnQueue.unsubscribe(clientRequestId,subscriber));
+          return;
+        }
+        const turnId=randomUUID();
         const reservation=clientRequestId&&claudeRuntime.reserveRequest?.(clientRequestId);
         if(reservation&&!reservation.created)return json(res,409,{error:'duplicate_client_request'});
         try{
           await claudeRuntime.preflight(body.config.runtimeId);
           const images=imageIds?.length?await imageStore?.bind(imageIds,{turnId,clientRequestId}):[];
-          const internalPrompt=images.length?`<frontend_image_context>\nThis frontend turn includes ${images.length} image attachment${images.length===1?'':'s'} available only through mcp__qiuqiu-frontend__read_frontend_image. Image IDs: ${images.map(image=>image.imageId).join(', ')}. Read them when needed to understand this turn.\n</frontend_image_context>${prompt?`\n\n${prompt}`:''}`:prompt;
+          const internalPrompt=internalPromptFor(prompt,images);
           const dispatch=async()=>{res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'keep-alive'});const client=new AbortController();res.once('close',()=>{if(!res.writableEnded)client.abort()});const emit=event=>{if(res.destroyed||res.writableEnded)return;writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};try{await claudeRuntime.chat({runtimeId:body.config.runtimeId,prompt:internalPrompt,emit,signal:client.signal,clientRequestId,turnId,images})}catch(error){if(!error.streamStarted)throw error}};
           if(rscCoordinator){imageStore?.leaseTurn?.(turnId,130000);await rscCoordinator.submit({clientRequestId,turnId,imageIds:imageIds||[],conversationId:body.config.runtimeId},dispatch)}else await dispatch();
         }catch(error){claudeRuntime.releaseRequest?.(clientRequestId);throw error}
@@ -249,6 +301,7 @@ if(process.argv[1]&&fileURLToPath(import.meta.url)===normalize(process.argv[1]))
   const allowPrivateForTests=process.env.NODE_ENV==='test'&&process.env.MODEL_UPSTREAM_ALLOW_PRIVATE_FOR_TESTS==='1';
   let rscCoordinator=null;if(process.env.QIUQIU_RSC_STATE_PATH){const rscStateStore=createProductionRscStateStore({path:process.env.QIUQIU_RSC_STATE_PATH});await rscStateStore.load();rscCoordinator=createProductionRscCoordinator({stateStore:rscStateStore})}
   const rscObservability=rscCoordinator?createRuntimeObservability({runtime:claudeRuntime,imageStore,coordinator:rscCoordinator}):null;if(rscObservability)console.info(JSON.stringify({component:'rsc_observability',event:'reconciled',snapshot:await rscObservability.reconcile()}));
-  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,frontendDeliverySecret:process.env.DWELL_FRONTEND_DELIVERY_SECRET||'',ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||'',validateModelUpstream:createModelUpstreamPolicy({allowPrivateForTests}),imageStore,photosStore,rscCoordinator,rscObservability});
+  const turnQueue=createClaudeTurnQueue({path:process.env.QIUQIU_TURN_QUEUE_PATH||fileURLToPath(new URL('./data/turn-queue.json',import.meta.url)),claudeRuntime,imageStore,rscCoordinator});await turnQueue.initialize();
+  const server=createDwellServer({claudeRuntime,hookSecret:config.hookSecret,frontendDeliverySecret:process.env.DWELL_FRONTEND_DELIVERY_SECRET||'',ombreService,qiuqiuWorkspace:process.env.QIUQIU_WORKSPACE||'',validateModelUpstream:createModelUpstreamPolicy({allowPrivateForTests}),imageStore,photosStore,rscCoordinator,rscObservability,turnQueue});
   server.listen(port,host,()=>console.log(`dwell 已醒来：本机 http://127.0.0.1:${port} · 局域网请使用电脑的 IPv4 地址`));
 }

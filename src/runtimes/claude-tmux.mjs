@@ -95,6 +95,7 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
       return reconciliation;
     },
     async status(){reconciliation=await registry.reconcile();return reconciliation},
+    async canAcceptQueuedTurn(){if(turnStore.get()||stopOperations.size)return false;const runtime=registry.get();if(!runtime)return false;const inspection=await transport.inspectSession(runtime.sessionName);return inspection.exists===true&&inspection.alive===true&&inspection.active!==true},
     async preflight(runtimeId,{allowDisabled=false}={}){
       if(!config.enabled&&!allowDisabled)throw Object.assign(new Error(config.unsupportedPlatform?'Claude tmux runtime 只支持 Linux/WSL/VPS':'Claude tmux runtime 未启用'),{statusCode:503});
       const state=await this.status();

@@ -6,7 +6,7 @@ import { createTurnStore } from '../src/turns/turn-store.mjs';
 
 function fixture({state='connected',stopTimeoutMs=20}={}){
   const runtimeRecord={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};const prompts=[],interrupts=[];
-  const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value)};
+  const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value),inspectSession:async()=>({exists:true,alive:true,active:false})};
   const registry={load:async()=>runtimeRecord,get:()=>runtimeRecord,reconcile:async()=>({state,runtime:runtimeRecord,inspection:{alive:state==='connected'}})};
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:250,stopTimeoutMs},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
   return {runtime,prompts,interrupts,completions};
@@ -23,6 +23,12 @@ test('runtime keeps ordinary MessageDisplay frames internal while preserving com
   assert.deepEqual(events.map(event=>event.type),['turn_started','segment_done','turn_done']);
   assert.equal(events.some(event=>event.type==='segment_delta'),false);
   assert.deepEqual(completions,['turn-1']);
+});
+
+test('queued dispatch readiness requires both the Node turn store and bridge owner to be idle',async()=>{
+  const {runtime}=fixture();await runtime.initialize();assert.equal(await runtime.canAcceptQueuedTurn(),true);
+  await runtime.chat({runtimeId:'runtime-main',turnId:'queue-active',prompt:'one',emit:()=>{}});assert.equal(await runtime.canAcceptQueuedTurn(),false);
+  await runtime.ingestRaw({event:'Stop'});assert.equal(await runtime.canAcceptQueuedTurn(),true);
 });
 
 test('album_saved is delivered live and retained in the turn replay journal',async()=>{
