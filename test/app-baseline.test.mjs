@@ -600,6 +600,11 @@ test('rerender does not expose ordinary deltas and finalizes once into the curre
   await f.emit({type:'turn_done'});await f.done;assert.equal(assistantArticles(f.get('#messages').innerHTML),1);assert.match(f.get('#messages').innerHTML,/new node body/);
 });
 
+test('completed assistant bubble follows existing bottom intent without stealing an active history scroll',async()=>{
+  const atBottom=await liveViewFixture(),bottomBox=atBottom.get('#messages');bottomBox.scrollHeight=1000;bottomBox.clientHeight=300;bottomBox.scrollTop=700;atBottom.api.setViewportBottomAnchor(true);await atBottom.emit({type:'segment_delta',delta:'final at bottom'});bottomBox.scrollHeight=1400;await atBottom.emit({type:'turn_done'});await atBottom.done;assert.equal(bottomBox.scrollTop,1100);
+  const readingHistory=await liveViewFixture(),historyBox=readingHistory.get('#messages');historyBox.scrollHeight=1000;historyBox.clientHeight=300;historyBox.scrollTop=700;readingHistory.api.setViewportBottomAnchor(true);readingHistory.api.cancelViewportBottomAnchor();historyBox.scrollTop=180;await readingHistory.emit({type:'segment_delta',delta:'final while reading'});historyBox.scrollHeight=1400;await readingHistory.emit({type:'turn_done'});await readingHistory.done;assert.equal(historyBox.scrollTop,180);
+});
+
 test('stream state continues without its chat DOM and never writes into another conversation',async()=>{
   const f=await liveViewFixture(),session=f.api.getState().sessions[0];f.api.newChat();
   await f.emit({type:'segment_delta',delta:'original conversation'});assert.equal(session.messages.at(-1).content,'original conversation');assert.equal(f.bubble(),undefined);

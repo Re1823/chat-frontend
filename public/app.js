@@ -311,7 +311,7 @@ function createStreamingView(out,initialFollow=keepBottomThroughViewportResize||
   box.classList.add('streaming');box.addEventListener?.('scroll',onScroll,{passive:true});
   return {
     update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
-    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal){dirty=true;flush();const bubble=currentBubble(),content=ordinaryAssistantPresentationText(out.content);if(bubble&&content)bubble.innerHTML=markup(content);if(current()?.messages.includes(out))renderMessages(false)}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
+    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal){dirty=true;flush();const bubble=currentBubble(),content=ordinaryAssistantPresentationText(out.content);if(bubble&&content)bubble.innerHTML=markup(content);if(current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleFrame(()=>{if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scrollMessagesToBottom($('#messages'))})}}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
     isFollowing:()=>follow
   };
 }
