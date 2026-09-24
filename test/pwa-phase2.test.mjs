@@ -50,16 +50,16 @@ test('internal sender cleans expired endpoints without exposing or blocking heal
 
 function loadWorker({windows=[]}={}){const sourcePromise=read('sw.js');return sourcePromise.then(source=>{const handlers={},shown=[],opened=[];const clients={matchAll:async()=>windows,openWindow:async target=>{opened.push(target);return {target}}};const context={URL,fetch:async()=>{},caches:{},self:{location:{origin:'https://qiuqiu.reesia.xyz'},registration:{showNotification:async(title,options)=>shown.push({title,options})},clients,addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);return {handlers,shown,opened}})}
 
-test('push shows a minimal notification and notification click reuses an existing PWA window',async()=>{
-  let navigated=null,focused=0;const existing={url:'https://qiuqiu.reesia.xyz/chat',navigate:async target=>{navigated=target;return existing},focus:async()=>{focused++}},worker=await loadWorker({windows:[existing]});
+test('push shows a minimal notification and notification click restores an existing PWA without reloading it',async()=>{
+  let navigated=null,focused=0,message=null;const existing={url:'https://qiuqiu.reesia.xyz/',postMessage:value=>{message=value},navigate:async target=>{navigated=target;return existing},focus:async()=>{focused++}},worker=await loadWorker({windows:[existing]});
   let pending;worker.handlers.push({data:{json:()=>({title:'秋秋',body:'回复好了',target:'/',tag:'turn-123','extra':'ignored'})},waitUntil:value=>{pending=value}});await pending;assert.deepEqual(JSON.parse(JSON.stringify(worker.shown[0])),{title:'秋秋',options:{body:'回复好了',icon:'/app-icon-192.png',data:{target:'/'},tag:'turn-123'}});
-  worker.handlers.notificationclick({notification:{data:{target:'/'},close(){}},waitUntil:value=>{pending=value}});await pending;assert.equal(navigated,'/');assert.equal(focused,1);assert.deepEqual(worker.opened,[]);
+  worker.handlers.notificationclick({notification:{data:{target:'/'},close(){}},waitUntil:value=>{pending=value}});await pending;assert.equal(navigated,null);assert.equal(focused,1);assert.deepEqual(JSON.parse(JSON.stringify(message)),{type:'qiuqiu-open-chat',target:'/'});assert.deepEqual(worker.opened,[]);
 });
 
 test('notification click cold-starts the PWA and malicious deep links fall back to root',async()=>{
   const worker=await loadWorker();let pending;worker.handlers.notificationclick({notification:{data:{target:'https://evil.example/steal'},close(){}},waitUntil:value=>{pending=value}});await pending;assert.deepEqual(worker.opened,['/']);assert.equal(safePushTarget('//evil.example/path'),'/');
 });
 
-test('Phase 1 viewport and API bypass invariants remain intact in pwa2',async()=>{
+test('Phase 1 viewport and API bypass invariants remain intact in pwa21',async()=>{
   const [css,app,worker]=await Promise.all([read('style.css'),read('app.js'),read('sw.js')]);assert.match(css,/@media\(display-mode:standalone\)\{html,body\{height:100vh;min-height:100vh/);assert.match(app,/function syncVisualViewport\(\)/);assert.match(worker,/url\.pathname\.startsWith\('\/api\/'\)\)return/);assert.doesNotMatch(worker,/caches\.match[^\n]+\/api/);
 });

@@ -70,9 +70,26 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     }
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
+  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
   return { api: context.__appTest, get, storage, rootStyles, context };
 }
+
+test('notification navigation closes Connections and restores the existing main chat without replacing local state',async()=>{
+  const handlers={},calls=[],navigator={standalone:true,onLine:true,serviceWorker:{addEventListener:(name,handler)=>{handlers[name]=handler}}};
+  const fetchImpl=async url=>{calls.push(url);return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main'}),{status:200})};
+  const sessions=[{id:'chat-1',provider:'claude_tmux',messages:[{role:'user',content:'还在这里'}]}];
+  const {api}=loadApp({'dwell.provider':'claude_tmux','dwell.sessions':JSON.stringify(sessions),'dwell.active':'chat-1'},fetchImpl,undefined,{navigator});
+  api.openUserHub();api.openConnections();assert.equal(api.getState().activeAppView,'user-hub');
+  handlers.message({data:{type:'qiuqiu-open-chat',target:'/'}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(api.getState().activeAppView,'chat');assert.equal(api.getState().sessions[0].messages[0].content,'还在这里');assert.equal(api.getState().activeProvider,'claude_tmux');assert(calls.includes('/api/runtimes/claude-tmux/status'));
+});
+
+test('standalone cold start adopts the connected production runtime through normal status recovery',async()=>{
+  const handlers={},navigator={standalone:true,onLine:true,serviceWorker:{addEventListener:(name,handler)=>{handlers[name]=handler}}};
+  const fetchImpl=async url=>{assert.equal(url,'/api/runtimes/claude-tmux/status');return new Response(JSON.stringify({state:'connected',runtimeId:'production-runtime'}),{status:200})};
+  const {api,storage}=loadApp({},fetchImpl,undefined,{navigator});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(api.getState().activeAppView,'chat');assert.equal(api.getState().activeProvider,'claude_tmux');assert.equal(api.getState().tmuxStatus.state,'connected');assert.equal(storage.get('dwell.provider'),'claude_tmux');assert.equal(JSON.parse(storage.get('dwell.profiles')).claude_tmux.runtimeId,'production-runtime');assert.equal(typeof handlers.message,'function');
+});
 
 test('thought process event stays out of ordinary assistant body and shows a turn-bound cloud',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a',createdAt:1};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-a',items:[{id:'i',type:'thinking',text:'reason'}]});assert.equal(out.content,'final');const html=api.renderChatMessage(out,null);assert.match(html,/data-thought-turn="turn-a"/);assert.doesNotMatch(html,/reason/)});
 test('assistant without thought process has no cloud button',()=>{const {api}=loadApp();assert.doesNotMatch(api.renderChatMessage({role:'assistant',content:'final',turnId:'turn-a',createdAt:1},null),/thought-cloud/)});
