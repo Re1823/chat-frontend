@@ -70,7 +70,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     }
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
+  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
   return { api: context.__appTest, get, storage, rootStyles, context };
 }
 
@@ -81,6 +81,34 @@ test('legacy segment recovery cannot reintroduce terminal-only assistant text',a
 test('wrong turn cannot bind thought process',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a'};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-b',items:[{id:'i',type:'thinking',text:'x'}]});assert.equal(out.thoughtProcess,undefined)});
 test('thought snapshot replacement merges streaming updates without duplicate items',()=>{const {api}=loadApp(),out={role:'assistant',content:'',turnId:'t'};api.applyTurnEvent(out,{type:'thought_process',turnId:'t',items:[{id:'i',type:'thinking',text:'a'}]});api.applyTurnEvent(out,{type:'thought_process',turnId:'t',items:[{id:'i',type:'thinking',text:'ab'}]});assert.deepEqual(JSON.parse(JSON.stringify(out.thoughtProcess.items)),[{id:'i',type:'thinking',text:'ab'}])});
 test('album_saved binds only to its turn, deduplicates and survives serialized chat rendering',()=>{const {api}=loadApp(),out={role:'assistant',content:'saved',turnId:'turn-a',createdAt:1},photo={photoId:'photo_01234567890123456789012345678901',albumName:'嘉宝果',note:'第一张画',savedAt:123,savedBy:'assistant'};api.applyTurnEvent(out,{type:'album_saved',turnId:'turn-b',photo});assert.equal(out.albumEvents,undefined);api.applyTurnEvent(out,{type:'album_saved',turnId:'turn-a',photo});api.applyTurnEvent(out,{type:'album_saved',turnId:'turn-a',photo});assert.equal(out.albumEvents.length,1);const html=api.renderChatMessage(JSON.parse(JSON.stringify(out)),null);assert.match(html,/album-save-card/);assert.match(html,/存进了「嘉宝果」/);assert.match(html,/秋秋 收藏了/);assert.match(html,/第一张画/)});
+
+test('chat search supports Chinese substring and case-insensitive English while excluding thought and album metadata',()=>{
+  const {api}=loadApp(),messages=[
+    {role:'user',content:'我到图书馆啦'},
+    {role:'assistant',content:'',toolMessages:[{content:'Remember the Biscuit'}],thoughtProcess:{items:[{text:'图书馆内部推理'}]}},
+    {role:'assistant',content:'',thoughtProcess:{items:[{text:'SECRET THINKING'}]}},
+    {role:'assistant',content:'',albumEvents:[{photo:{photoId:'photo_01234567890123456789012345678901',albumName:'Biscuit Album'}}]}
+  ];
+  assert.deepEqual(JSON.parse(JSON.stringify(api.findChatSearchResults(messages,'图书馆'))).map(item=>item.index),[0]);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.findChatSearchResults(messages,'bIScUiT'))).map(item=>item.index),[1]);
+  assert.equal(api.findChatSearchResults(messages,'SECRET').length,0);
+  assert.equal(api.findChatSearchResults(messages,'Album').length,0);
+  assert.equal(api.findChatSearchResults(messages,'   ').length,0);
+});
+
+test('local calendar days and presentation-only dividers respect natural-day boundaries',()=>{
+  const {api}=loadApp(),day1=new Date(2026,8,23,23,58).getTime(),day2=new Date(2026,8,24,0,2).getTime(),day3=new Date(2026,8,25,9,5).getTime();
+  const messages=[{role:'user',content:'a',createdAt:day1},{role:'assistant',content:'b',createdAt:day1+1000},{role:'assistant',content:'',thoughtProcess:{items:[{text:'hidden'}]},createdAt:day2},{role:'user',content:'c',createdAt:day2},{role:'assistant',content:'d',createdAt:day2+1000},{role:'user',content:'e',createdAt:day3}];
+  const output=api.renderChatHistory(messages);
+  assert.equal((output.match(/chat-day-divider/g)||[]).length,2);
+  assert.doesNotMatch(output.slice(0,output.indexOf('data-message-index="0"')),/chat-day-divider/);
+  assert.match(output,/9月24日 · 00:02/);
+  assert.match(output,/9月25日 · 09:05/);
+  assert.equal(api.localDayKey(new Date(2026,8,24,0,1)),'2026-09-24');
+  const days=api.buildCalendarDays(2026,8,'2026-09-23','2026-09-25','2026-09-24').filter(Boolean);
+  assert.equal(days.find(day=>day.key==='2026-09-22').disabled,true);
+  assert.equal(days.find(day=>day.key==='2026-09-24').selected,true);
+});
 
 test('keeps the established provider presets and storage keys', () => {
   const session = { id:'old', title:'保留', provider:'relay', created:123, messages:[{role:'user',content:'你好'}] };
