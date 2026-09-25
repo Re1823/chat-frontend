@@ -1,18 +1,18 @@
 const CACHE_PREFIX='qiuqiu-shell-';
-const CACHE_NAME='qiuqiu-shell-pwa22';
+const CACHE_NAME='qiuqiu-shell-pwa23';
 const SHELL_ASSETS=[
-  '/style.css?v=pwa22',
-  '/app.js?v=pwa22',
-  '/manifest.webmanifest?v=pwa22',
+  '/style.css?v=pwa23',
+  '/app.js?v=pwa23',
+  '/manifest.webmanifest?v=pwa23',
   '/app-icon-192.png',
   '/app-icon-512.png',
   '/apple-touch-icon-180.png'
 ];
 const SHELL_KEYS=new Set(SHELL_ASSETS);
 const SHELL_TYPES=new Map([
-  ['/style.css?v=pwa22','text/css'],
-  ['/app.js?v=pwa22','text/javascript'],
-  ['/manifest.webmanifest?v=pwa22','application/manifest+json'],
+  ['/style.css?v=pwa23','text/css'],
+  ['/app.js?v=pwa23','text/javascript'],
+  ['/manifest.webmanifest?v=pwa23','application/manifest+json'],
   ['/app-icon-192.png','image/png'],
   ['/app-icon-512.png','image/png'],
   ['/apple-touch-icon-180.png','image/png']

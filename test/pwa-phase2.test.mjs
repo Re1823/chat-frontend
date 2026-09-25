@@ -41,6 +41,15 @@ test('subscription API stays same-origin, bounded, durable, and exposes only the
   }finally{await new Promise(resolve=>server.close(resolve))}
 });
 
+test('notification resume diagnostics accept only bounded same-origin fixed-schema events',async()=>{
+  const records=[],server=createDwellServer({clientDiagnosticLog:record=>records.push(record)});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${server.address().port}`,payload={version:1,correlationId:'0123456789ab',sequence:1,stage:'notification_received',resumePath:'notification_existing_client',displayMode:'standalone',navigatorStandalone:true,locationOrigin:base,locationPathname:'/',sessionsCount:null,claudeRuntimeSessionCount:null,activeIdPresent:null,activeIdValid:null,restoreSelected:null,selectedMessageCount:null,eligibleRecoveryAnchorCount:null,restoreEntered:null,recoveryReason:'not_reached',journalReplayAttemptedCount:null,runtimeRequestExecuted:false,runtimeHttpStatus:null,runtimeState:'not_requested',runtimeActive:null,runtimeActiveTurnPresent:null,onboarding:null,onboardingReason:'not_rendered'},headers={'content-type':'application/json','sec-fetch-site':'same-origin',origin:base};
+  try{const accepted=await fetch(base+'/api/client-diagnostics/notification-resume',{method:'POST',headers,body:JSON.stringify(payload)});assert.equal(accepted.status,202);assert.equal(records.length,1);assert.equal(records[0].component,'client_diagnostic');assert.equal(records[0].event,'notification_resume');assert.equal(records[0].locationOrigin,base);assert.doesNotMatch(JSON.stringify(records[0]),/chat body|clientRequestId|turnId|subscription|authorization/i);
+    const extra=await fetch(base+'/api/client-diagnostics/notification-resume',{method:'POST',headers,body:JSON.stringify({...payload,message:'arbitrary text'})});assert.equal(extra.status,400);
+    const cross=await fetch(base+'/api/client-diagnostics/notification-resume',{method:'POST',headers:{...headers,'sec-fetch-site':'cross-site',origin:'https://evil.example'},body:JSON.stringify({...payload,locationOrigin:'https://evil.example'})});assert.equal(cross.status,403);
+    const oversized=await fetch(base+'/api/client-diagnostics/notification-resume',{method:'POST',headers,body:JSON.stringify({...payload,padding:'x'.repeat(5000)})});assert.equal(oversized.status,413);assert.equal(records.length,1)
+  }finally{await new Promise(resolve=>server.close(resolve))}
+});
+
 test('internal sender cleans expired endpoints without exposing or blocking healthy subscriptions',async()=>{
   const removed=[],store={list:async()=>[{installationId:'a',subscription:subscription('https://push.example/gone')},{installationId:'b',subscription:subscription('https://push.example/live')}],removeEndpoint:async endpoint=>{removed.push(endpoint)}},sent=[];
   const transport={setVapidDetails:(subject,publicKey,privateKey)=>{assert.equal(subject,'mailto:owner@example.com');assert.equal(publicKey,'pub');assert.equal(privateKey,'private')},sendNotification:async sub=>{sent.push(sub.endpoint);if(sub.endpoint.endsWith('/gone'))throw Object.assign(new Error('gone'),{statusCode:410})}};
@@ -60,6 +69,6 @@ test('notification click cold-starts the PWA and malicious deep links fall back 
   const worker=await loadWorker();let pending;worker.handlers.notificationclick({notification:{data:{target:'https://evil.example/steal'},close(){}},waitUntil:value=>{pending=value}});await pending;assert.deepEqual(worker.opened,['/']);assert.equal(safePushTarget('//evil.example/path'),'/');
 });
 
-test('Phase 1 viewport and API bypass invariants remain intact in pwa22',async()=>{
+test('Phase 1 viewport and API bypass invariants remain intact in pwa23',async()=>{
   const [css,app,worker]=await Promise.all([read('style.css'),read('app.js'),read('sw.js')]);assert.match(css,/@media\(display-mode:standalone\)\{html,body\{height:100vh;min-height:100vh/);assert.match(app,/function syncVisualViewport\(\)/);assert.match(worker,/url\.pathname\.startsWith\('\/api\/'\)\)return/);assert.doesNotMatch(worker,/caches\.match[^\n]+\/api/);
 });

@@ -19,22 +19,22 @@ test('manifest installs the existing chat root as a standalone 秋秋 app',async
 
 test('index exposes iOS metadata and registers the versioned root service worker',async()=>{
   const [html,app]=await Promise.all([read('index.html'),read('app.js')]);
-  assert.match(html,/viewport-fit=cover/);assert.match(html,/rel="manifest" href="\/manifest\.webmanifest\?v=pwa22"/);assert.match(html,/rel="apple-touch-icon" sizes="180x180"/);assert.match(html,/apple-mobile-web-app-capable" content="yes"/);assert.match(html,/app\.js\?v=pwa22/);
-  assert.match(app,/serviceWorker\.register\('\/sw\.js\?v=pwa22',\{scope:'\/'\}\)/);
+  assert.match(html,/viewport-fit=cover/);assert.match(html,/rel="manifest" href="\/manifest\.webmanifest\?v=pwa23"/);assert.match(html,/rel="apple-touch-icon" sizes="180x180"/);assert.match(html,/apple-mobile-web-app-capable" content="yes"/);assert.match(html,/app\.js\?v=pwa23/);
+  assert.match(app,/serviceWorker\.register\('\/sw\.js\?v=pwa23',\{scope:'\/'\}\)/);
 });
 
 test('service worker bypasses API and handles only its explicit static shell',async()=>{
   const source=await read('sw.js'),handlers={};
   const context={URL,fetch:async()=>{throw new Error('network should not run')},caches:{match:async()=>({cached:true})},self:{location:{origin:'https://qiuqiu.reesia.xyz'},addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);
   let apiHandled=false;handlers.fetch({request:{method:'GET',url:'https://qiuqiu.reesia.xyz/api/chat'},respondWith:()=>{apiHandled=true}});assert.equal(apiHandled,false);
-  let postHandled=false;handlers.fetch({request:{method:'POST',url:'https://qiuqiu.reesia.xyz/app.js?v=pwa22'},respondWith:()=>{postHandled=true}});assert.equal(postHandled,false);
-  let shellPromise;handlers.fetch({request:{method:'GET',url:'https://qiuqiu.reesia.xyz/app.js?v=pwa22'},respondWith:value=>{shellPromise=value}});assert.ok(shellPromise);assert.deepEqual(await shellPromise,{cached:true});
+  let postHandled=false;handlers.fetch({request:{method:'POST',url:'https://qiuqiu.reesia.xyz/app.js?v=pwa23'},respondWith:()=>{postHandled=true}});assert.equal(postHandled,false);
+  let shellPromise;handlers.fetch({request:{method:'GET',url:'https://qiuqiu.reesia.xyz/app.js?v=pwa23'},respondWith:value=>{shellPromise=value}});assert.ok(shellPromise);assert.deepEqual(await shellPromise,{cached:true});
   assert.match(source,/type\.startsWith\(SHELL_TYPES\.get\(asset\)\)/);assert.doesNotMatch(source.match(/const SHELL_ASSETS=\[[\s\S]*?\];/)?.[0]||'',/['"]\/(?:index\.html)?['"]/);assert.doesNotMatch(source,/indexedDB|localStorage/);
 });
 
-test('activating pwa22 deletes only older qiuqiu shell caches',async()=>{
+test('activating pwa23 deletes only older qiuqiu shell caches',async()=>{
   const source=await read('sw.js'),handlers={},deleted=[];
-  const context={URL,fetch:async()=>{},caches:{keys:async()=>['qiuqiu-shell-old','qiuqiu-shell-pwa21','qiuqiu-shell-pwa22','unrelated'],delete:async name=>{deleted.push(name)}},self:{location:{origin:'https://qiuqiu.reesia.xyz'},clients:{claim:async()=>{}},skipWaiting:async()=>{},addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);
+  const context={URL,fetch:async()=>{},caches:{keys:async()=>['qiuqiu-shell-old','qiuqiu-shell-pwa21','qiuqiu-shell-pwa23','unrelated'],delete:async name=>{deleted.push(name)}},self:{location:{origin:'https://qiuqiu.reesia.xyz'},clients:{claim:async()=>{}},skipWaiting:async()=>{},addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);
   let activation;handlers.activate({waitUntil:value=>{activation=value}});await activation;assert.deepEqual(deleted,['qiuqiu-shell-old','qiuqiu-shell-pwa21']);
 });
 

@@ -37,6 +37,17 @@ const readBody = req => new Promise((resolve, reject) => { let s=''; req.on('dat
 const readSmallJson=async(req,maxBytes=32768)=>{if(!String(req.headers['content-type']||'').toLowerCase().startsWith('application/json'))throw Object.assign(new Error('json_content_type_required'),{statusCode:415});let bytes=0,text='';for await(const chunk of req){bytes+=Buffer.byteLength(chunk);if(bytes>maxBytes)throw Object.assign(new Error('push_request_too_large'),{statusCode:413});text+=chunk}try{return JSON.parse(text||'{}')}catch{throw Object.assign(new Error('invalid_json'),{statusCode:400})}};
 const sameSiteRequest=req=>!req.headers['sec-fetch-site']||['same-origin','same-site','none'].includes(String(req.headers['sec-fetch-site']));
 const requestOrigin=req=>`${String(req.headers['x-forwarded-proto']||'http').split(',')[0].trim()}://${req.headers.host}`;
+const NOTIFICATION_RESUME_DIAGNOSTIC_KEYS=['version','correlationId','sequence','stage','resumePath','displayMode','navigatorStandalone','locationOrigin','locationPathname','sessionsCount','claudeRuntimeSessionCount','activeIdPresent','activeIdValid','restoreSelected','selectedMessageCount','eligibleRecoveryAnchorCount','restoreEntered','recoveryReason','journalReplayAttemptedCount','runtimeRequestExecuted','runtimeHttpStatus','runtimeState','runtimeActive','runtimeActiveTurnPresent','onboarding','onboardingReason'];
+const NOTIFICATION_RESUME_STAGES=new Set(['notification_received','local_state','runtime_refresh','recovery','final_render']);
+const NOTIFICATION_RECOVERY_REASONS=new Set(['not_reached','no_current_session','non_claude_runtime_session','no_eligible_recovery_anchor','replay_attempted']);
+const NOTIFICATION_ONBOARDING_REASONS=new Set(['not_rendered','no_current_session','current_session_empty','not_onboarding']);
+const NOTIFICATION_RUNTIME_STATES=new Set(['not_requested','unknown','connected','unreachable','disabled','unsupported_platform','missing','exited']);
+const nullableBoolean=value=>value===null||typeof value==='boolean';
+const nullableInteger=(value,min,max)=>value===null||(Number.isInteger(value)&&value>=min&&value<=max);
+function validNotificationResumeDiagnostic(body,origin){
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==NOTIFICATION_RESUME_DIAGNOSTIC_KEYS.length||NOTIFICATION_RESUME_DIAGNOSTIC_KEYS.some(key=>!(key in body)))return false;
+  return body.version===1&&/^[0-9a-f]{12}$/.test(body.correlationId)&&Number.isInteger(body.sequence)&&body.sequence>=1&&body.sequence<=5&&NOTIFICATION_RESUME_STAGES.has(body.stage)&&body.resumePath==='notification_existing_client'&&['standalone','browser','unknown'].includes(body.displayMode)&&nullableBoolean(body.navigatorStandalone)&&body.locationOrigin===origin&&['/','other'].includes(body.locationPathname)&&nullableInteger(body.sessionsCount,0,10000)&&nullableInteger(body.claudeRuntimeSessionCount,0,10000)&&nullableBoolean(body.activeIdPresent)&&nullableBoolean(body.activeIdValid)&&nullableBoolean(body.restoreSelected)&&nullableInteger(body.selectedMessageCount,0,100000)&&nullableInteger(body.eligibleRecoveryAnchorCount,0,100000)&&nullableBoolean(body.restoreEntered)&&NOTIFICATION_RECOVERY_REASONS.has(body.recoveryReason)&&nullableInteger(body.journalReplayAttemptedCount,0,100000)&&typeof body.runtimeRequestExecuted==='boolean'&&nullableInteger(body.runtimeHttpStatus,100,599)&&NOTIFICATION_RUNTIME_STATES.has(body.runtimeState)&&nullableBoolean(body.runtimeActive)&&nullableBoolean(body.runtimeActiveTurnPresent)&&nullableBoolean(body.onboarding)&&NOTIFICATION_ONBOARDING_REASONS.has(body.onboardingReason);
+}
 async function relay(req, res, test=false, suppliedBody,validateUpstream) {
   try {
     const { config:cfg, messages=[] } = suppliedBody||await readBody(req);
@@ -120,7 +131,7 @@ export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoo
   return createDurableTurnQueue({path,dispatch,canDispatch,log,...options});
 }
 
-export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null,pushStore=null,pushService=null }={}){
+export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null,pushStore=null,pushService=null,clientDiagnosticLog=record=>console.info(JSON.stringify(record)) }={}){
   const ombreRoutes=ombreService?createOmbreDashboardRoutes(ombreService):null;
   const photosMcpHandler=photosStore&&imageStore?createPhotosMcpHandler({photosStore,currentTurnId:()=>claudeRuntime?.activeTurnId?.(),readCurrentTurnImage:(imageId,turnId)=>imageStore.readForTurn(imageId,turnId),sendSavedPhoto:(photo,text)=>claudeRuntime.deliverSavedPhoto(photo,text),emitAlbumSaved:photo=>claudeRuntime.emitAlbumSaved(photo)}):null;
   const server=http.createServer(async(req,res)=>{
@@ -133,6 +144,11 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         const body=await readSmallJson(req);
         if(req.method==='POST'){if(Object.keys(body).some(key=>!['installationId','subscription'].includes(key)))return json(res,400,{error:'invalid_push_request'});const record=await pushStore.upsert(body);return json(res,201,{ok:true,installationId:record.installationId})}
         if(Object.keys(body).some(key=>!['installationId','endpoint'].includes(key)))return json(res,400,{error:'invalid_push_request'});return json(res,200,{ok:true,removed:await pushStore.remove(body)});
+      }
+      if(req.method==='POST'&&req.url==='/api/client-diagnostics/notification-resume'){
+        res.setHeader('cache-control','no-store');const origin=requestOrigin(req);if(!sameSiteRequest(req)||req.headers.origin!==origin)return json(res,403,{error:'forbidden'});
+        const body=await readSmallJson(req,4096);if(!validNotificationResumeDiagnostic(body,origin))return json(res,400,{error:'invalid_notification_resume_diagnostic'});
+        clientDiagnosticLog({component:'client_diagnostic',event:'notification_resume',receivedAt:new Date().toISOString(),...body});return json(res,202,{ok:true});
       }
       if(req.method==='POST'&&req.url==='/api/internal/frontend-message'){
         if(!loopback(req.socket.remoteAddress)||req.headers.origin)return json(res,403,{ok:false,error:'Forbidden'});

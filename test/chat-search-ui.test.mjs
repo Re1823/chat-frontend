@@ -74,6 +74,6 @@ test('day dividers are derived at presentation time and never stored as messages
 });
 
 test('search release bumps both browser assets together',()=>{
-  assert.match(html,/style\.css\?v=pwa22/);
-  assert.match(html,/app\.js\?v=pwa22/);
+  assert.match(html,/style\.css\?v=pwa23/);
+  assert.match(html,/app\.js\?v=pwa23/);
 });
