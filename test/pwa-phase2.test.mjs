@@ -60,6 +60,6 @@ test('notification click cold-starts the PWA and malicious deep links fall back 
   const worker=await loadWorker();let pending;worker.handlers.notificationclick({notification:{data:{target:'https://evil.example/steal'},close(){}},waitUntil:value=>{pending=value}});await pending;assert.deepEqual(worker.opened,['/']);assert.equal(safePushTarget('//evil.example/path'),'/');
 });
 
-test('Phase 1 viewport and API bypass invariants remain intact in pwa21',async()=>{
+test('Phase 1 viewport and API bypass invariants remain intact in pwa22',async()=>{
   const [css,app,worker]=await Promise.all([read('style.css'),read('app.js'),read('sw.js')]);assert.match(css,/@media\(display-mode:standalone\)\{html,body\{height:100vh;min-height:100vh/);assert.match(app,/function syncVisualViewport\(\)/);assert.match(worker,/url\.pathname\.startsWith\('\/api\/'\)\)return/);assert.doesNotMatch(worker,/caches\.match[^\n]+\/api/);
 });
