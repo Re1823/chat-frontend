@@ -20,6 +20,7 @@ import {prepareShadowCarryover} from '../src/runtimes/rsc/phase2.mjs';
 import {createCompactRotationCoordinator,createTranscriptCompactReader} from '../src/runtimes/rsc/compact-rotation.mjs';
 import {normalizeProductionRscState} from '../src/runtimes/rsc/production-state.mjs';
 import {evaluateCandidateCommit,committedCandidateState} from './rsc-commit-barrier.mjs';
+import {productionConversationSnapshot} from '../src/runtimes/production-conversation.mjs';
 
 const SOCKET_FD = 3;
 const ALLOWED_UID = 999;
@@ -329,6 +330,16 @@ async function completeTurn(turnId,terminalType) {
 
 async function thoughtSnapshot(turnId){if(!thoughtTurn||thoughtTurn.turnId!==turnId)throw Object.assign(new Error('thought turn does not match'),{status:409});const bytes=await readFile(thoughtTurn.path),cursor=bytes.length;const tail=bytes.subarray(Math.min(thoughtTurn.offset,cursor)).toString('utf8'),lines=tail.split(/\r?\n/).filter(Boolean),records=[];for(const line of lines){try{const value=JSON.parse(line);if(value.sessionId===thoughtTurn.sessionId||value.session_id===thoughtTurn.sessionId)records.push(value)}catch{}}return {version:1,cursor,...normalizeThoughtRecords(records)}}
 
+async function productionConversation(){
+  const state=await loadRscState(),ownerSessionId=state.candidateActiveSessionId||state.currentProductionSessionId;
+  if(!ownerSessionId||!await hasSession())return {available:false,messages:[]};
+  const actualSessionId=await processSessionId().catch(()=>null);
+  if(actualSessionId!==ownerSessionId)return {available:false,messages:[]};
+  const evidence=await readFile(`${TRANSCRIPT_DIR}/${ownerSessionId}.jsonl`,'utf8').then(text=>transcriptTextEvidence(text,ownerSessionId)).catch(()=>null);
+  if(!evidence||evidence.hardFailure||!evidence.parseable||!evidence.valid||!evidence.records?.length)return {available:false,messages:[]};
+  return productionConversationSnapshot(evidence.records);
+}
+
 function exactFields(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const actual = Object.keys(value).sort();
@@ -375,6 +386,10 @@ async function dispatch(message) {
   if(message.op==='thought_snapshot'){
     if(!exactFields(message,['op','turnId'])||!TURN_ID.test(String(message.turnId||'')))throw Object.assign(new Error('invalid request'),{status:400});
     return {ok:true,...await thoughtSnapshot(message.turnId)};
+  }
+  if(message.op==='production_conversation'){
+    if(!exactFields(message,['op']))throw Object.assign(new Error('unknown fields'),{status:400});
+    return {ok:true,...await productionConversation()};
   }
   if(message.op==='activate_carryover'||message.op==='rollback_carryover')return dispatchRscBridge(message,rscHandoff);
   throw Object.assign(new Error('unknown op'), { status: 400 });

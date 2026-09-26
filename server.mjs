@@ -281,6 +281,13 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
       if(attachPhotoMatch){if(!photosStore||!imageStore)return json(res,503,{error:'photos_unavailable'});const photo=await photosStore.readPhoto(attachPhotoMatch[1]);return json(res,201,await imageStore.add({data:photo.data,mime:photo.mime,capturedAt:photo.metadata.capturedAt,sourceType:photo.metadata.sourceType}))}
       const photoMatch=req.method==='GET'&&photosUrl.pathname.match(/^\/api\/photos\/(photo_[A-Za-z0-9_-]{32})(?:\/(content|thumbnail))?$/);
       if(photoMatch){if(!photosStore)return json(res,503,{error:'photos_unavailable'});if(!photoMatch[2]){const photo=photosStore.getPhoto(photoMatch[1]);return photo?json(res,200,photo):json(res,404,{error:'photo_not_found'})}const image=await photosStore.readPhoto(photoMatch[1],photoMatch[2]);res.writeHead(200,{'content-type':image.mime,'content-length':image.data.length,'cache-control':'private, max-age=86400','x-content-type-options':'nosniff'});res.end(image.data);return}
+      if(req.method==='GET'&&req.url==='/api/runtimes/claude-tmux/production-conversation'){
+        res.setHeader('cache-control','no-store');res.setHeader('cross-origin-resource-policy','same-origin');res.setHeader('x-content-type-options','nosniff');
+        if(!sameSiteRequest(req))return json(res,403,{error:'forbidden'});
+        if(!claudeRuntime?.productionConversation)return json(res,404,{available:false});
+        const status=await claudeRuntime.status();if(status.state!=='connected')return json(res,409,{available:false});
+        const snapshot=await claudeRuntime.productionConversation();return snapshot?.available?json(res,200,snapshot):json(res,404,{available:false});
+      }
       if(req.method==='GET'&&req.url==='/api/runtimes/claude-tmux/status'){
         if(!claudeRuntime)return json(res,200,{enabled:false,state:'disabled'});
         const configuration=claudeRuntime.configuration();

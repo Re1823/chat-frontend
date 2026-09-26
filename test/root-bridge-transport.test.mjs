@@ -55,6 +55,11 @@ test('thought snapshots use their dedicated client',async()=>{
   assert.deepEqual(calls,[{op:'thought_snapshot',turnId:'turn-thought'}]);
 });
 
+test('production conversation snapshots use a read-only dedicated bridge operation',async()=>{
+  const calls=[],transport=createRootBridgeTransport({request:async()=>({ok:true}),sendRequest:async()=>({ok:true}),thoughtRequest:async()=>({ok:true}),conversationRequest:async message=>{calls.push(message);return {ok:true,available:true,messages:[{role:'user',content:'hello'}]}}});
+  assert.deepEqual(await transport.productionConversation(),{ok:true,available:true,messages:[{role:'user',content:'hello'}]});assert.deepEqual(calls,[{op:'production_conversation'}]);
+});
+
 test('bridge response limit is configurable without weakening the default client',async()=>{
   const payload=JSON.stringify({ok:true,value:'x'.repeat(70*1024)});
   await assert.rejects(createRootBridgeClient({connect:()=>fakeConnection(payload)})({op:'status'}),/response too large/);

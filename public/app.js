@@ -92,7 +92,7 @@ function notificationResumeCorrelationId(){const candidate=String(globalThis.cry
 function emitNotificationResumeDiagnostic(stage){const trace=notificationResumeDiagnostic;if(!trace)return;trace.stage=stage;trace.sequence++;const payload=Object.fromEntries(Object.keys(notificationResumeDiagnosticTemplate()).map(key=>[key,trace[key]]));trace.delivery=trace.delivery.then(()=>fetch('/api/client-diagnostics/notification-resume',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'content-type':'application/json'},body:JSON.stringify(payload)})).catch(()=>{})}
 function beginNotificationResumeDiagnostic(){const trace=notificationResumeDiagnosticTemplate();trace.correlationId=notificationResumeCorrelationId();trace.delivery=Promise.resolve();notificationResumeDiagnostic=trace;emitNotificationResumeDiagnostic('notification_received');return trace}
 function finishNotificationResumeDiagnostic(){const trace=notificationResumeDiagnostic;if(!trace)return;trace.onboarding=['no_current_session','current_session_empty'].includes(lastChatRenderOutcome);trace.onboardingReason=trace.onboarding?lastChatRenderOutcome:'not_onboarding';emitNotificationResumeDiagnostic('final_render')}
-const pageshowScriptVersion='pwa23-cold1',pageshowCacheVersion='pwa23-cold1';let pageshowDiagnosticSequence=0,coldResumeDiagnostic=null,coldResumeRuntimePromise=null;
+const pageshowScriptVersion='pwa24-recovery1',pageshowCacheVersion='pwa24-recovery1';let pageshowDiagnosticSequence=0,coldResumeDiagnostic=null,coldResumeRuntimePromise=null;
 function readPageshowStorageSnapshot(){
   try{
     const rawSessions=localStorage.getItem('dwell.sessions'),storedActiveId=localStorage.getItem('dwell.active')||'';
@@ -156,6 +156,24 @@ async function restoreAvailableProductionRuntime({diagnostic=false}={}){
   const previousProvider=activeProvider;activeProvider='claude_tmux';const status=await refreshRuntimeStatus({diagnostic});
   if(status.state!=='connected'){if(cold)cold.restoreAvailableReason='runtime_not_connected';activeProvider=previousProvider;updateStatus();return false}
   profiles.claude_tmux={runtime:'claude_tmux',runtimeId:status.runtimeId||runtimePresets.claude_tmux.runtimeId};persist();renderProviders();renderAll(false);restoreInterruptedConnection();if(cold)cold.restoreAvailableReason='restored_provider';return true
+}
+function normalizedProductionConversation(value){
+  if(!value?.available||!Array.isArray(value.messages)||!value.messages.length||value.messages.length>10000)return null;
+  const messages=[];
+  for(const item of value.messages){
+    if(!item||!['user','assistant'].includes(item.role)||typeof item.content!=='string'||!item.content.trim()||item.content.length>16384)return null;
+    const createdAt=typeof item.createdAt==='number'||typeof item.createdAt==='string'?item.createdAt:Date.now();messages.push({role:item.role,content:item.content,createdAt});
+  }
+  return messages.some(message=>message.role==='user')&&messages.some(message=>message.role==='assistant')?messages:null;
+}
+async function restoreColdProductionConversation(){
+  const cold=coldResumeDiagnostic;if(!cold||!installedPwa()||cold.storedSessionsCount!==0||current()||tmuxStatus.state!=='connected')return false;
+  try{
+    const response=await fetch('/api/runtimes/claude-tmux/production-conversation',{credentials:'same-origin',cache:'no-store'});if(!response.ok)return false;
+    const messages=normalizedProductionConversation(await response.json());if(!messages||current()||sessions.length)return false;
+    const firstUser=messages.find(message=>message.role==='user'),session={id:generateId(),title:String(firstUser?.content||'恢复的对话').trim().slice(0,22)||'恢复的对话',provider:'claude_tmux',created:new Date(messages[0].createdAt).getTime()||Date.now(),messages};
+    sessions.unshift(session);activeId=session.id;activeProvider='claude_tmux';profiles.claude_tmux={runtime:'claude_tmux',runtimeId:tmuxStatus.runtimeId||runtimePresets.claude_tmux.runtimeId};persist();renderProviders();renderAll();restoreInterruptedConnection();return true;
+  }catch{return false}
 }
 function current(){ return sessions.find(s=>s.id===activeId); }
 function restoreStoredConversation(){
@@ -560,7 +578,7 @@ function restoreInterruptedConnection(){
   }if(diagnostic)emitNotificationResumeDiagnostic('recovery')
 }
 restoreInterruptedConnection();
-const coldAvailableRuntimePromise=restoreAvailableProductionRuntime();if(coldResumeDiagnostic)void Promise.allSettled([coldResumeRuntimePromise,coldAvailableRuntimePromise].filter(Boolean)).then(finishColdResumeDiagnostic);
+const coldAvailableRuntimePromise=restoreAvailableProductionRuntime();if(coldResumeDiagnostic)void Promise.allSettled([coldResumeRuntimePromise,coldAvailableRuntimePromise].filter(Boolean)).then(()=>restoreColdProductionConversation()).finally(finishColdResumeDiagnostic);
 async function recoverLegacySuppressedFinals(){return false}
 globalThis.navigator?.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.type==='qiuqiu-open-chat'&&event.data.target==='/')void restoreMainChatFromNavigation()});
-if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa23-cold1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
+if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa24-recovery1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});

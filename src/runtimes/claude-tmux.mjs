@@ -198,6 +198,7 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
     },
     turnStatus(turnId){const result=turnStore.status(turnId);record('recovery_status_query',turnId,{state:result?.state||'unknown'});return result},
     turnEvents(turnId,afterSeq){const result=turnStore.replay(turnId,afterSeq);record('recovery_events_query',turnId,{state:result?.state||'unknown',afterSeq});return result},
+    async productionConversation(){return transport.productionConversation?transport.productionConversation():{available:false,messages:[]}},
     activeTurnId(){return turnStore.get()?.turnId||null},
     hasActiveTurn(){return !!turnStore.get()},
     quiescence(){const journal=turnStore.quiescence?.();return {runtimeActive:!!turnStore.get(),activeTurnId:turnStore.get()?.turnId||null,unfinishedJournalCount:journal?.unfinishedJournalCount,finalizationInProgress:finalizations>0,pendingClientRequestCount:journal?.pendingClientRequestCount}},
