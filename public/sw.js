@@ -1,8 +1,8 @@
 const CACHE_PREFIX='qiuqiu-shell-';
-const CACHE_NAME='qiuqiu-shell-pwa23-pageshow1';
+const CACHE_NAME='qiuqiu-shell-pwa23-cold1';
 const SHELL_ASSETS=[
   '/style.css?v=pwa23',
-  '/app.js?v=pwa23',
+  '/app.js?v=pwa23-cold1',
   '/manifest.webmanifest?v=pwa23',
   '/app-icon-192.png',
   '/app-icon-512.png',
@@ -11,7 +11,7 @@ const SHELL_ASSETS=[
 const SHELL_KEYS=new Set(SHELL_ASSETS);
 const SHELL_TYPES=new Map([
   ['/style.css?v=pwa23','text/css'],
-  ['/app.js?v=pwa23','text/javascript'],
+  ['/app.js?v=pwa23-cold1','text/javascript'],
   ['/manifest.webmanifest?v=pwa23','application/manifest+json'],
   ['/app-icon-192.png','image/png'],
   ['/app-icon-512.png','image/png'],
@@ -54,6 +54,7 @@ function safeNotificationTarget(value){
   const raw=String(value||'/');
   try{const url=new URL(raw,self.location.origin);if(url.origin!==self.location.origin||raw.startsWith('//')||!url.pathname.startsWith('/'))return '/';return url.pathname+url.search+url.hash}catch{return '/'}
 }
+const coldResumeTarget=target=>target==='/'?'/?qiuqiu_resume=notification':target;
 
 self.addEventListener('push',event=>{
   let payload={};try{payload=event.data?.json?.()||{}}catch{}
@@ -68,6 +69,6 @@ self.addEventListener('notificationclick',event=>{
     const windows=await self.clients.matchAll({type:'window',includeUncontrolled:true}),existing=windows.find(client=>{try{return new URL(client.url).origin===self.location.origin}catch{return false}});
     if(existing&&target==='/'){existing.postMessage({type:'qiuqiu-open-chat',target});return existing.focus()}
     if(existing){const navigated=await existing.navigate?.(target);return (navigated||existing).focus()}
-    return self.clients.openWindow(target);
+    return self.clients.openWindow(coldResumeTarget(target));
   })());
 });

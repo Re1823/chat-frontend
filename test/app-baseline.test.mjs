@@ -41,6 +41,9 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
   };
   const storage = new Map(Object.entries(initialStorage));
   const rootStyles = {};
+  class TestURL extends URL {}
+  TestURL.createObjectURL=()=> 'blob:test';TestURL.revokeObjectURL=()=>{};
+  const location={origin:'https://qiuqiu.reesia.xyz',pathname:'/',href:'https://qiuqiu.reesia.xyz/',search:'',hash:'',...(timing.location||{})};
   const context = {
     console,
     TextDecoder,
@@ -54,7 +57,8 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     navigator: timing.navigator,
     performance: timing.performance,
     addEventListener: timing.addEventListener,
-    location: timing.location || {origin:'https://qiuqiu.reesia.xyz',pathname:'/'},
+    location,
+    history: timing.history||{state:null,replaceState(){}},
     matchMedia: timing.matchMedia || (()=>({matches:false})),
     requestAnimationFrame: timing.requestAnimationFrame,
     cancelAnimationFrame: timing.cancelAnimationFrame,
@@ -64,7 +68,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
       getItem: key => storage.has(key) ? storage.get(key) : null,
       setItem: (key, value) => storage.set(key, String(value))
     },
-    URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
+    URL: TestURL,
     document: {
       body:new FakeElement(),
       visibilityState:timing.visibilityState||'visible',
@@ -75,18 +79,27 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     }
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreStoredConversation,capturePageshowDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
+  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreStoredConversation,capturePageshowDiagnostic,finishColdResumeDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
   return { api: context.__appTest, get, storage, rootStyles, context };
 }
 
 test('pageshow diagnostic compares frozen memory with storage without hydrating, selecting or rendering',async()=>{
   const diagnostics=[],handlers=[];
   const fetchImpl=async(url,init={})=>{assert.equal(url,'/api/client-diagnostics/pageshow');diagnostics.push(JSON.parse(init.body));return new Response(JSON.stringify({ok:true}),{status:202})};
-  const navigator={standalone:false,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa23'},addEventListener(){}}};
+  const navigator={standalone:false,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa23-cold1'},addEventListener(){}}};
   const fixture=loadApp({},fetchImpl,{randomUUID:()=> '01234567-89ab-4cde-8f01-23456789abcd'},{navigator,performance:{getEntriesByType:type=>type==='navigation'?[{type:'back_forward'}]:[]},addEventListener:(name,handler)=>{if(name==='pageshow')handlers.push(handler)}});
   const stored=[{id:'stored-only',provider:'claude_tmux',messages:[{role:'assistant',content:'private fixture'}]}];fixture.storage.set('dwell.sessions',JSON.stringify(stored));fixture.storage.set('dwell.active','stored-only');
   for(const handler of handlers)handler({persisted:true});await new Promise(resolve=>setImmediate(resolve));
   const snapshot=diagnostics[0];assert.equal(snapshot.eventPersisted,true);assert.equal(snapshot.navigationType,'back_forward');assert.equal(snapshot.memorySessionsCount,0);assert.equal(snapshot.storedSessionsCount,1);assert.equal(snapshot.memoryActiveIdPresent,false);assert.equal(snapshot.storedActiveIdPresent,true);assert.equal(snapshot.storedActiveIdValid,true);assert.equal(snapshot.storedCurrentMessageCount,1);assert.equal(snapshot.sessionCountMatches,false);assert.equal(snapshot.activeSelectionMatches,false);assert.equal(snapshot.onboardingVisible,true);assert.equal(snapshot.renderReason,'no_current_session');assert.equal(snapshot.serviceWorkerControllerPresent,true);assert.equal(fixture.api.getState().sessions.length,0);assert.equal(fixture.api.getState().activeId,'');assert.equal(fixture.storage.get('dwell.active'),'stored-only');assert.doesNotMatch(JSON.stringify(snapshot),/stored-only|private fixture/)
+});
+
+test('notification cold open consumes its marker and reports one bounded bootstrap snapshot before recovery',async()=>{
+  const diagnostics=[],replaced=[],calls=[],session={id:'private-session-id',provider:'claude_tmux',messages:[{role:'assistant',content:'private message',delivery:{phase:'finished'}}]};
+  const fetchImpl=async(url,init={})=>{calls.push(url);if(url==='/api/client-diagnostics/notification-cold-resume'){diagnostics.push(JSON.parse(init.body));return new Response(JSON.stringify({ok:true}),{status:202})}if(url==='/api/runtimes/claude-tmux/status')return new Response(JSON.stringify({state:'connected',runtimeId:'private-runtime-id',active:false,activeTurnId:null}),{status:200});throw new Error(`unexpected fetch ${url}`)};
+  const navigator={standalone:true,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa23-cold1'},addEventListener(){}}},history={state:{safe:true},replaceState:(state,title,url)=>replaced.push({state,title,url})};
+  const fixture=loadApp({'dwell.provider':'claude_tmux','dwell.sessions':JSON.stringify([session]),'dwell.active':'stale-private-id'},fetchImpl,{randomUUID:()=> '01234567-89ab-4cde-8f01-23456789abcd'},{navigator,history,location:{origin:'https://qiuqiu.reesia.xyz',pathname:'/',href:'https://qiuqiu.reesia.xyz/?qiuqiu_resume=notification',search:'?qiuqiu_resume=notification',hash:''},performance:{getEntriesByType:type=>type==='navigation'?[{type:'navigate'}]:[]},matchMedia:query=>({matches:query==='(display-mode: standalone)'})});
+  for(let index=0;index<8;index++)await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(replaced,[{state:{safe:true},title:'',url:'/'}]);assert.equal(diagnostics.length,1);const snapshot=diagnostics[0];assert.equal(snapshot.resumeIntentPresent,true);assert.equal(snapshot.resumePath,'notification_cold_open');assert.equal(snapshot.scriptVersion,'pwa23-cold1');assert.equal(snapshot.cacheVersion,'pwa23-cold1');assert.equal(snapshot.navigationType,'navigate');assert.equal(snapshot.memorySessionsCount,1);assert.equal(snapshot.memoryActiveIdPresent,true);assert.equal(snapshot.memoryActiveIdValid,false);assert.equal(snapshot.storedSessionsCount,1);assert.equal(snapshot.storedActiveIdValid,false);assert.equal(snapshot.sessionCountMatches,true);assert.equal(snapshot.activeSelectionMatches,true);assert.equal(snapshot.restoreStoredConversationEntered,true);assert.equal(snapshot.restoreStoredConversationSelected,true);assert.equal(snapshot.selectedMessageCount,1);assert.equal(snapshot.restoreInterruptedEntered,true);assert.equal(snapshot.restoreInterruptedReason,'no_eligible_recovery_anchor');assert.equal(snapshot.restoreAvailableEntered,false);assert.equal(snapshot.restoreAvailableReason,'already_claude_runtime');assert.equal(snapshot.runtimeHttpStatus,200);assert.equal(snapshot.runtimeState,'connected');assert.equal(snapshot.finalCurrentSessionPresent,true);assert.equal(snapshot.finalCurrentMessageCount,1);assert.equal(snapshot.onboarding,false);assert.equal(snapshot.onboardingReason,'not_onboarding');assert.equal(calls.filter(url=>url==='/api/client-diagnostics/notification-cold-resume').length,1);assert.doesNotMatch(JSON.stringify(snapshot),/private-session-id|stale-private-id|private message|private-runtime-id|qiuqiu_resume/);assert.equal(fixture.api.getState().activeId,'private-session-id')
 });
 
 test('notification navigation repairs a stale conversation anchor, refreshes runtime, and replays the existing chat turn',async()=>{
