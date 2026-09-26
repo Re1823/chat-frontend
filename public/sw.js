@@ -1,5 +1,5 @@
 const CACHE_PREFIX='qiuqiu-shell-';
-const CACHE_NAME='qiuqiu-shell-pwa23';
+const CACHE_NAME='qiuqiu-shell-pwa23-pageshow1';
 const SHELL_ASSETS=[
   '/style.css?v=pwa23',
   '/app.js?v=pwa23',

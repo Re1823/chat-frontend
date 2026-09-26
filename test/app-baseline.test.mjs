@@ -52,6 +52,8 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     setTimeout: timing.setTimeout || (fn => { fn(); return 1; }),
     clearTimeout: timing.clearTimeout || (()=>{}),
     navigator: timing.navigator,
+    performance: timing.performance,
+    addEventListener: timing.addEventListener,
     location: timing.location || {origin:'https://qiuqiu.reesia.xyz',pathname:'/'},
     matchMedia: timing.matchMedia || (()=>({matches:false})),
     requestAnimationFrame: timing.requestAnimationFrame,
@@ -65,6 +67,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     document: {
       body:new FakeElement(),
+      visibilityState:timing.visibilityState||'visible',
       documentElement: {clientHeight:800,style:{setProperty:(name,value)=>{rootStyles[name]=value}}},
       querySelector: get,
       querySelectorAll: timing.querySelectorAll || (() => []),
@@ -72,9 +75,19 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     }
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreStoredConversation,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
+  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreStoredConversation,capturePageshowDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
   return { api: context.__appTest, get, storage, rootStyles, context };
 }
+
+test('pageshow diagnostic compares frozen memory with storage without hydrating, selecting or rendering',async()=>{
+  const diagnostics=[],handlers=[];
+  const fetchImpl=async(url,init={})=>{assert.equal(url,'/api/client-diagnostics/pageshow');diagnostics.push(JSON.parse(init.body));return new Response(JSON.stringify({ok:true}),{status:202})};
+  const navigator={standalone:false,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa23'},addEventListener(){}}};
+  const fixture=loadApp({},fetchImpl,{randomUUID:()=> '01234567-89ab-4cde-8f01-23456789abcd'},{navigator,performance:{getEntriesByType:type=>type==='navigation'?[{type:'back_forward'}]:[]},addEventListener:(name,handler)=>{if(name==='pageshow')handlers.push(handler)}});
+  const stored=[{id:'stored-only',provider:'claude_tmux',messages:[{role:'assistant',content:'private fixture'}]}];fixture.storage.set('dwell.sessions',JSON.stringify(stored));fixture.storage.set('dwell.active','stored-only');
+  for(const handler of handlers)handler({persisted:true});await new Promise(resolve=>setImmediate(resolve));
+  const snapshot=diagnostics[0];assert.equal(snapshot.eventPersisted,true);assert.equal(snapshot.navigationType,'back_forward');assert.equal(snapshot.memorySessionsCount,0);assert.equal(snapshot.storedSessionsCount,1);assert.equal(snapshot.memoryActiveIdPresent,false);assert.equal(snapshot.storedActiveIdPresent,true);assert.equal(snapshot.storedActiveIdValid,true);assert.equal(snapshot.storedCurrentMessageCount,1);assert.equal(snapshot.sessionCountMatches,false);assert.equal(snapshot.activeSelectionMatches,false);assert.equal(snapshot.onboardingVisible,true);assert.equal(snapshot.renderReason,'no_current_session');assert.equal(snapshot.serviceWorkerControllerPresent,true);assert.equal(fixture.api.getState().sessions.length,0);assert.equal(fixture.api.getState().activeId,'');assert.equal(fixture.storage.get('dwell.active'),'stored-only');assert.doesNotMatch(JSON.stringify(snapshot),/stored-only|private fixture/)
+});
 
 test('notification navigation repairs a stale conversation anchor, refreshes runtime, and replays the existing chat turn',async()=>{
   const handlers={},calls=[],navigator={standalone:true,onLine:true,serviceWorker:{addEventListener:(name,handler)=>{handlers[name]=handler}}};

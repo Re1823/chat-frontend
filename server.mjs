@@ -42,11 +42,19 @@ const NOTIFICATION_RESUME_STAGES=new Set(['notification_received','local_state',
 const NOTIFICATION_RECOVERY_REASONS=new Set(['not_reached','no_current_session','non_claude_runtime_session','no_eligible_recovery_anchor','replay_attempted']);
 const NOTIFICATION_ONBOARDING_REASONS=new Set(['not_rendered','no_current_session','current_session_empty','not_onboarding']);
 const NOTIFICATION_RUNTIME_STATES=new Set(['not_requested','unknown','connected','unreachable','disabled','unsupported_platform','missing','exited']);
+const PAGESHOW_DIAGNOSTIC_KEYS=['version','correlationId','sequence','eventPersisted','navigationType','scriptVersion','cacheVersion','visibilityState','displayModeStandalone','navigatorStandalone','locationOrigin','locationPathname','serviceWorkerControllerPresent','memorySessionsCount','memoryActiveIdPresent','memoryActiveIdValid','memoryCurrentSessionPresent','memoryCurrentMessageCount','storageState','storedSessionsCount','storedActiveIdPresent','storedActiveIdValid','storedCurrentSessionPresent','storedCurrentMessageCount','sessionCountMatches','activeSelectionMatches','onboardingVisible','renderReason'];
+const PAGESHOW_NAVIGATION_TYPES=new Set(['navigate','reload','back_forward','prerender','unknown']);
+const PAGESHOW_VISIBILITY_STATES=new Set(['visible','hidden','prerender','unknown']);
+const PAGESHOW_STORAGE_STATES=new Set(['ok','missing','invalid','unavailable']);
 const nullableBoolean=value=>value===null||typeof value==='boolean';
 const nullableInteger=(value,min,max)=>value===null||(Number.isInteger(value)&&value>=min&&value<=max);
 function validNotificationResumeDiagnostic(body,origin){
   if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==NOTIFICATION_RESUME_DIAGNOSTIC_KEYS.length||NOTIFICATION_RESUME_DIAGNOSTIC_KEYS.some(key=>!(key in body)))return false;
   return body.version===1&&/^[0-9a-f]{12}$/.test(body.correlationId)&&Number.isInteger(body.sequence)&&body.sequence>=1&&body.sequence<=5&&NOTIFICATION_RESUME_STAGES.has(body.stage)&&body.resumePath==='notification_existing_client'&&['standalone','browser','unknown'].includes(body.displayMode)&&nullableBoolean(body.navigatorStandalone)&&body.locationOrigin===origin&&['/','other'].includes(body.locationPathname)&&nullableInteger(body.sessionsCount,0,10000)&&nullableInteger(body.claudeRuntimeSessionCount,0,10000)&&nullableBoolean(body.activeIdPresent)&&nullableBoolean(body.activeIdValid)&&nullableBoolean(body.restoreSelected)&&nullableInteger(body.selectedMessageCount,0,100000)&&nullableInteger(body.eligibleRecoveryAnchorCount,0,100000)&&nullableBoolean(body.restoreEntered)&&NOTIFICATION_RECOVERY_REASONS.has(body.recoveryReason)&&nullableInteger(body.journalReplayAttemptedCount,0,100000)&&typeof body.runtimeRequestExecuted==='boolean'&&nullableInteger(body.runtimeHttpStatus,100,599)&&NOTIFICATION_RUNTIME_STATES.has(body.runtimeState)&&nullableBoolean(body.runtimeActive)&&nullableBoolean(body.runtimeActiveTurnPresent)&&nullableBoolean(body.onboarding)&&NOTIFICATION_ONBOARDING_REASONS.has(body.onboardingReason);
+}
+function validPageshowDiagnostic(body,origin){
+  if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).length!==PAGESHOW_DIAGNOSTIC_KEYS.length||PAGESHOW_DIAGNOSTIC_KEYS.some(key=>!(key in body)))return false;
+  return body.version===1&&/^[0-9a-f]{12}$/.test(body.correlationId)&&Number.isInteger(body.sequence)&&body.sequence>=1&&body.sequence<=4&&typeof body.eventPersisted==='boolean'&&PAGESHOW_NAVIGATION_TYPES.has(body.navigationType)&&body.scriptVersion==='pwa23'&&body.cacheVersion==='pwa23-pageshow1'&&PAGESHOW_VISIBILITY_STATES.has(body.visibilityState)&&typeof body.displayModeStandalone==='boolean'&&nullableBoolean(body.navigatorStandalone)&&body.locationOrigin===origin&&['/','other'].includes(body.locationPathname)&&typeof body.serviceWorkerControllerPresent==='boolean'&&nullableInteger(body.memorySessionsCount,0,10000)&&typeof body.memoryActiveIdPresent==='boolean'&&typeof body.memoryActiveIdValid==='boolean'&&typeof body.memoryCurrentSessionPresent==='boolean'&&nullableInteger(body.memoryCurrentMessageCount,0,100000)&&PAGESHOW_STORAGE_STATES.has(body.storageState)&&nullableInteger(body.storedSessionsCount,0,10000)&&typeof body.storedActiveIdPresent==='boolean'&&typeof body.storedActiveIdValid==='boolean'&&typeof body.storedCurrentSessionPresent==='boolean'&&nullableInteger(body.storedCurrentMessageCount,0,100000)&&nullableBoolean(body.sessionCountMatches)&&nullableBoolean(body.activeSelectionMatches)&&typeof body.onboardingVisible==='boolean'&&NOTIFICATION_ONBOARDING_REASONS.has(body.renderReason);
 }
 async function relay(req, res, test=false, suppliedBody,validateUpstream) {
   try {
@@ -151,6 +159,11 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         res.setHeader('cache-control','no-store');const origin=requestOrigin(req);if(!sameSiteRequest(req)||req.headers.origin!==origin)return json(res,403,{error:'forbidden'});
         const body=await readSmallJson(req,4096);if(!validNotificationResumeDiagnostic(body,origin))return json(res,400,{error:'invalid_notification_resume_diagnostic'});
         clientDiagnosticLog({component:'client_diagnostic',event:'notification_resume',receivedAt:new Date().toISOString(),...body});return json(res,202,{ok:true});
+      }
+      if(req.method==='POST'&&req.url==='/api/client-diagnostics/pageshow'){
+        res.setHeader('cache-control','no-store');const origin=requestOrigin(req);if(!sameSiteRequest(req)||req.headers.origin!==origin)return json(res,403,{error:'forbidden'});
+        const body=await readSmallJson(req,4096);if(!validPageshowDiagnostic(body,origin))return json(res,400,{error:'invalid_pageshow_diagnostic'});
+        clientDiagnosticLog({component:'client_diagnostic',event:'pageshow_bootstrap_snapshot',receivedAt:new Date().toISOString(),...body});return json(res,202,{ok:true});
       }
       if(req.method==='POST'&&req.url==='/api/internal/frontend-message'){
         if(!loopback(req.socket.remoteAddress)||req.headers.origin)return json(res,403,{ok:false,error:'Forbidden'});

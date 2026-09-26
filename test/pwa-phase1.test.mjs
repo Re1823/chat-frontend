@@ -32,10 +32,10 @@ test('service worker bypasses API and handles only its explicit static shell',as
   assert.match(source,/type\.startsWith\(SHELL_TYPES\.get\(asset\)\)/);assert.doesNotMatch(source.match(/const SHELL_ASSETS=\[[\s\S]*?\];/)?.[0]||'',/['"]\/(?:index\.html)?['"]/);assert.doesNotMatch(source,/indexedDB|localStorage/);
 });
 
-test('activating pwa23 deletes only older qiuqiu shell caches',async()=>{
+test('activating pwa23 pageshow diagnostic cache deletes only older qiuqiu shell caches',async()=>{
   const source=await read('sw.js'),handlers={},deleted=[];
-  const context={URL,fetch:async()=>{},caches:{keys:async()=>['qiuqiu-shell-old','qiuqiu-shell-pwa21','qiuqiu-shell-pwa23','unrelated'],delete:async name=>{deleted.push(name)}},self:{location:{origin:'https://qiuqiu.reesia.xyz'},clients:{claim:async()=>{}},skipWaiting:async()=>{},addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);
-  let activation;handlers.activate({waitUntil:value=>{activation=value}});await activation;assert.deepEqual(deleted,['qiuqiu-shell-old','qiuqiu-shell-pwa21']);
+  const context={URL,fetch:async()=>{},caches:{keys:async()=>['qiuqiu-shell-old','qiuqiu-shell-pwa21','qiuqiu-shell-pwa23','qiuqiu-shell-pwa23-pageshow1','unrelated'],delete:async name=>{deleted.push(name)}},self:{location:{origin:'https://qiuqiu.reesia.xyz'},clients:{claim:async()=>{}},skipWaiting:async()=>{},addEventListener:(name,handler)=>{handlers[name]=handler}}};vm.createContext(context);vm.runInContext(source,context);
+  let activation;handlers.activate({waitUntil:value=>{activation=value}});await activation;assert.deepEqual(deleted,['qiuqiu-shell-old','qiuqiu-shell-pwa21','qiuqiu-shell-pwa23']);
 });
 
 test('standalone shell uses 100vh while visualViewport chat sizing stays intact',async()=>{

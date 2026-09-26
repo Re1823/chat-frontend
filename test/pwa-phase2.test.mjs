@@ -50,6 +50,14 @@ test('notification resume diagnostics accept only bounded same-origin fixed-sche
   }finally{await new Promise(resolve=>server.close(resolve))}
 });
 
+test('pageshow bootstrap diagnostics accept only bounded same-origin fixed-schema snapshots',async()=>{
+  const records=[],server=createDwellServer({clientDiagnosticLog:record=>records.push(record)});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${server.address().port}`,payload={version:1,correlationId:'0123456789ab',sequence:1,eventPersisted:true,navigationType:'back_forward',scriptVersion:'pwa23',cacheVersion:'pwa23-pageshow1',visibilityState:'visible',displayModeStandalone:false,navigatorStandalone:false,locationOrigin:base,locationPathname:'/',serviceWorkerControllerPresent:true,memorySessionsCount:0,memoryActiveIdPresent:false,memoryActiveIdValid:false,memoryCurrentSessionPresent:false,memoryCurrentMessageCount:null,storageState:'ok',storedSessionsCount:1,storedActiveIdPresent:true,storedActiveIdValid:true,storedCurrentSessionPresent:true,storedCurrentMessageCount:12,sessionCountMatches:false,activeSelectionMatches:false,onboardingVisible:true,renderReason:'no_current_session'},headers={'content-type':'application/json','sec-fetch-site':'same-origin',origin:base};
+  try{const accepted=await fetch(base+'/api/client-diagnostics/pageshow',{method:'POST',headers,body:JSON.stringify(payload)});assert.equal(accepted.status,202);assert.equal(records.length,1);assert.equal(records[0].event,'pageshow_bootstrap_snapshot');assert.doesNotMatch(JSON.stringify(records[0]),/message body|stored-only|private fixture|clientRequestId|turnId|subscription|authorization/i);
+    const extra=await fetch(base+'/api/client-diagnostics/pageshow',{method:'POST',headers,body:JSON.stringify({...payload,message:'arbitrary text'})});assert.equal(extra.status,400);
+    const oversized=await fetch(base+'/api/client-diagnostics/pageshow',{method:'POST',headers,body:JSON.stringify({...payload,padding:'x'.repeat(5000)})});assert.equal(oversized.status,413);assert.equal(records.length,1)
+  }finally{await new Promise(resolve=>server.close(resolve))}
+});
+
 test('internal sender cleans expired endpoints without exposing or blocking healthy subscriptions',async()=>{
   const removed=[],store={list:async()=>[{installationId:'a',subscription:subscription('https://push.example/gone')},{installationId:'b',subscription:subscription('https://push.example/live')}],removeEndpoint:async endpoint=>{removed.push(endpoint)}},sent=[];
   const transport={setVapidDetails:(subject,publicKey,privateKey)=>{assert.equal(subject,'mailto:owner@example.com');assert.equal(publicKey,'pub');assert.equal(privateKey,'private')},sendNotification:async sub=>{sent.push(sub.endpoint);if(sub.endpoint.endsWith('/gone'))throw Object.assign(new Error('gone'),{statusCode:410})}};

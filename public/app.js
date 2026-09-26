@@ -92,6 +92,23 @@ function notificationResumeCorrelationId(){const candidate=String(globalThis.cry
 function emitNotificationResumeDiagnostic(stage){const trace=notificationResumeDiagnostic;if(!trace)return;trace.stage=stage;trace.sequence++;const payload=Object.fromEntries(Object.keys(notificationResumeDiagnosticTemplate()).map(key=>[key,trace[key]]));trace.delivery=trace.delivery.then(()=>fetch('/api/client-diagnostics/notification-resume',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'content-type':'application/json'},body:JSON.stringify(payload)})).catch(()=>{})}
 function beginNotificationResumeDiagnostic(){const trace=notificationResumeDiagnosticTemplate();trace.correlationId=notificationResumeCorrelationId();trace.delivery=Promise.resolve();notificationResumeDiagnostic=trace;emitNotificationResumeDiagnostic('notification_received');return trace}
 function finishNotificationResumeDiagnostic(){const trace=notificationResumeDiagnostic;if(!trace)return;trace.onboarding=['no_current_session','current_session_empty'].includes(lastChatRenderOutcome);trace.onboardingReason=trace.onboarding?lastChatRenderOutcome:'not_onboarding';emitNotificationResumeDiagnostic('final_render')}
+const pageshowScriptVersion='pwa23',pageshowCacheVersion='pwa23-pageshow1';let pageshowDiagnosticSequence=0;
+function readPageshowStorageSnapshot(){
+  try{
+    const rawSessions=localStorage.getItem('dwell.sessions'),storedActiveId=localStorage.getItem('dwell.active')||'';
+    if(rawSessions===null)return {state:'missing',sessions:[],activeId:storedActiveId};
+    const parsed=JSON.parse(rawSessions);if(!Array.isArray(parsed))return {state:'invalid',sessions:null,activeId:storedActiveId};
+    return {state:'ok',sessions:parsed,activeId:storedActiveId}
+  }catch{return {state:'unavailable',sessions:null,activeId:''}}
+}
+function capturePageshowDiagnostic(event={}){
+  if(pageshowDiagnosticSequence>=4)return null;
+  const stored=readPageshowStorageSnapshot(),storedSessions=stored.sessions,memoryCurrent=current(),memoryActiveValid=!!activeId&&sessions.some(session=>session?.id===activeId),storedActiveValid=Array.isArray(storedSessions)&&!!stored.activeId&&storedSessions.some(session=>session?.id===stored.activeId),storedCurrent=storedActiveValid?storedSessions.find(session=>session?.id===stored.activeId):null;
+  const navigation=globalThis.performance?.getEntriesByType?.('navigation')?.[0]?.type,navigationType=['navigate','reload','back_forward','prerender'].includes(navigation)?navigation:'unknown',visibility=['visible','hidden','prerender'].includes(document.visibilityState)?document.visibilityState:'unknown',renderReason=['not_rendered','no_current_session','current_session_empty','not_onboarding'].includes(lastChatRenderOutcome)?lastChatRenderOutcome:'not_rendered';
+  const payload={version:1,correlationId:notificationResumeCorrelationId(),sequence:++pageshowDiagnosticSequence,eventPersisted:event?.persisted===true,navigationType,scriptVersion:pageshowScriptVersion,cacheVersion:pageshowCacheVersion,visibilityState:visibility,displayModeStandalone:globalThis.matchMedia?.('(display-mode: standalone)')?.matches===true,navigatorStandalone:typeof globalThis.navigator?.standalone==='boolean'?globalThis.navigator.standalone:null,locationOrigin:String(globalThis.location?.origin||''),locationPathname:globalThis.location?.pathname==='/'?'/':'other',serviceWorkerControllerPresent:Boolean(globalThis.navigator?.serviceWorker?.controller),memorySessionsCount:Math.min(sessions.length,10000),memoryActiveIdPresent:Boolean(activeId),memoryActiveIdValid:memoryActiveValid,memoryCurrentSessionPresent:Boolean(memoryCurrent),memoryCurrentMessageCount:memoryCurrent&&Array.isArray(memoryCurrent.messages)?Math.min(memoryCurrent.messages.length,100000):null,storageState:stored.state,storedSessionsCount:Array.isArray(storedSessions)?Math.min(storedSessions.length,10000):null,storedActiveIdPresent:Boolean(stored.activeId),storedActiveIdValid:storedActiveValid,storedCurrentSessionPresent:Boolean(storedCurrent),storedCurrentMessageCount:storedCurrent&&Array.isArray(storedCurrent.messages)?Math.min(storedCurrent.messages.length,100000):null,sessionCountMatches:Array.isArray(storedSessions)?sessions.length===storedSessions.length:null,activeSelectionMatches:Array.isArray(storedSessions)?String(activeId||'')===String(stored.activeId||''):null,onboardingVisible:activeAppView==='chat'&&['no_current_session','current_session_empty'].includes(renderReason),renderReason};
+  try{void fetch('/api/client-diagnostics/pageshow',{method:'POST',credentials:'same-origin',keepalive:true,headers:{'content-type':'application/json'},body:JSON.stringify(payload)}).catch(()=>{})}catch{}
+  return payload
+}
 const pushSupported=()=>Boolean(globalThis.isSecureContext!==false&&globalThis.Notification&&globalThis.navigator?.serviceWorker&&globalThis.PushManager);
 function pushInstallationId(){let id=localStorage.getItem(pushInstallationKey);if(!/^[0-9a-f-]{36}$/i.test(id||'')){id=generateId();localStorage.setItem(pushInstallationKey,id)}return id}
 function setNotificationUi(message,label='开启',disabled=false){const status=$('#notificationsStatus'),button=$('#notificationsButton');if(status)status.textContent=message;if(button){button.textContent=label;button.disabled=disabled}}
@@ -517,6 +534,7 @@ $('#viewerStage').addEventListener?.('touchstart',event=>{viewerStartX=event.cha
 // Backgrounding and offline events never cancel or resend the chat POST.
 const resumeConnectionCheck=()=>{if(document.visibilityState==='hidden'||globalThis.navigator?.onLine===false)return;for(const request of activeRequests.values())if(request.phase==='connection_lost')recoverConnection(request)};
 globalThis.addEventListener?.('online',resumeConnectionCheck);
+globalThis.addEventListener?.('pageshow',capturePageshowDiagnostic);
 globalThis.addEventListener?.('pageshow',resumeConnectionCheck);
 globalThis.addEventListener?.('focus',resumeConnectionCheck);
 document.addEventListener?.('visibilitychange',resumeConnectionCheck);
