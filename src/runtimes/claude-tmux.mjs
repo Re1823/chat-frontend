@@ -7,7 +7,7 @@ const terminal=event=>['turn_done','turn_stopped','turn_error'].includes(event.t
 
 export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ingress,imageStore=null,frameBufferFactory=createFrameBuffer,log=record=>console.info(JSON.stringify(record))}){
   const frontendDelivery=createFrontendDelivery({turnStore,runtimeId:config.runtimeId});
-  const finished=new Map(),stopOperations=new Map(),thoughtPolls=new Map();
+  const finished=new Map(),stopOperations=new Map(),thoughtPolls=new Map(),acceptancePolls=new Map();
   let finalizations=0;
   const record=(event,turnId,details={})=>{try{log({time:new Date().toISOString(),component:'node',event,turnId,clientRequestId:turnStore.status?.(turnId)?.clientRequestId||null,...details})}catch{}};
   const remember=(turn,event)=>{finished.set(turn.turnId,{runtimeId:turn.runtimeId,event:event.type});if(finished.size>256)finished.delete(finished.keys().next().value)};
@@ -39,15 +39,23 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
   };
   const scheduleThoughts=turn=>{if(!transport.thoughtSnapshot)return;const state=thoughtState(turn.turnId);const tick=async()=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return;await syncThoughts(turn);state.timer=setTimeout(tick,350);state.timer.unref?.()};state.timer=setTimeout(tick,0);state.timer.unref?.()};
   const stopThoughts=async turn=>{const state=thoughtPolls.get(turn.turnId);if(state?.timer)clearTimeout(state.timer);await syncThoughts(turn);thoughtPolls.delete(turn.turnId)};
-  const finalize=async(turn,event,{released=false}={})=>{
+  const finalize=async(turn,event,{released=false,skipThoughts=false}={})=>{
     if(!turnStore.matches(turn.runtimeId,turn.turnId))return;
-    finalizations++;try{await stopThoughts(turn);remember(turn,event);
+    const acceptanceTimer=acceptancePolls.get(turn.turnId);if(acceptanceTimer)clearTimeout(acceptanceTimer);acceptancePolls.delete(turn.turnId);
+    finalizations++;try{if(!skipThoughts)await stopThoughts(turn);remember(turn,event);
     try{turnStore.finish(turn.runtimeId,turn.turnId,event)}
     finally{
       await imageStore?.finishTurn?.(turn.turnId,event.type==='turn_error'?'failed':event.type==='turn_stopped'?'stopped':'finished');
       record('node_finalized',turn.turnId,{terminal:event.type,active:false});
-      if(!released){await transport.complete?.(turn.turnId);record('bridge_complete',turn.turnId)}
+      if(!released){await transport.complete?.(turn.turnId,event.type);record('bridge_complete',turn.turnId,{terminal:event.type})}
     }} finally {finalizations--}
+  };
+  const acceptTurn=turn=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return false;turnStore.accepted(turn.turnId);record('input_accepted',turn.turnId);scheduleThoughts(turn);return true};
+  const failUnaccepted=async(turn,code='DELIVERY_NOT_ACCEPTED')=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return;record('delivery_failed',turn.turnId,{errorCode:code});await finalize(turn,turnEvent.error(turn.turnId,'消息未被 Claude 接受',code),{released:true,skipThoughts:true})};
+  const scheduleAcceptance=turn=>{
+    if(!transport.deliveryStatus||acceptancePolls.has(turn.turnId))return;
+    const tick=async()=>{if(!turnStore.matches(turn.runtimeId,turn.turnId))return acceptancePolls.delete(turn.turnId);try{const result=await transport.deliveryStatus(turn.turnId);if(result?.deliveryState==='input_accepted'){acceptancePolls.delete(turn.turnId);acceptTurn(turn);return}if(result?.deliveryState==='delivery_failed'){acceptancePolls.delete(turn.turnId);await failUnaccepted(turn,result.code);return}if(result?.deliveryState==='delivery_uncertain')turnStore.deliveryUncertain(turn.turnId,result?.code||'DELIVERY_UNCERTAIN')}catch(error){record('delivery_reconciliation_error',turn.turnId,{errorCode:String(error?.code||error?.statusCode||'UNKNOWN').slice(0,80)})}const timer=setTimeout(tick,1000);timer.unref?.();acceptancePolls.set(turn.turnId,timer)};
+    const timer=setTimeout(tick,250);timer.unref?.();acceptancePolls.set(turn.turnId,timer);
   };
   const processRaw=async raw=>{
     const turn=turnStore.get();
@@ -57,15 +65,21 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
     if(raw.turnId&&raw.turnId!==turn.turnId){record('stale_hook_ignored',raw.turnId);return {accepted:false,reason:'turn_mismatch'}};
     const frame=await ingress.adapt(raw,{runtimeId:turn.runtimeId});if(!frame)return {accepted:false,reason:'ignored'};
     if(frame.kind==='assistant_frame'){
+      if(turnStore.status(turn.turnId)?.receivedByRuntime!==true)acceptTurn(turn);
+      turnStore.running(turn.turnId);
       record('ordinary_assistant_internal',turn.turnId,{source:'MessageDisplay'});
       return {accepted:true,reason:'internal_only'};
     }
     if(frame.kind==='turn_error'||(frame.kind==='turn_stop'&&frame.outcome==='failed')){
+      if(turnStore.status(turn.turnId)?.receivedByRuntime!==true)acceptTurn(turn);
+      turnStore.running(turn.turnId);
       emitSegmentDone(turn,turn.runtimeId);
       await finalize(turn,turnEvent.error(turn.turnId,frame.message||frame.reason||'Claude Code 回复失败'));
       return {accepted:true};
     }
     if(frame.kind==='turn_stop'){
+      if(turnStore.status(turn.turnId)?.receivedByRuntime!==true)acceptTurn(turn);
+      turnStore.running(turn.turnId);
       emitSegmentDone(turn,turn.runtimeId);
       const event=turn.state==='stop_requested'?turnEvent.stopped(turn.turnId):turnEvent.done(turn.turnId);
       await finalize(turn,event);
@@ -104,7 +118,7 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
       if(turnStore.get()||stopOperations.size)throw Object.assign(new Error('Claude tmux runtime 当前已有活动回复'),{statusCode:409});
       return state.runtime;
     },
-    async chat({runtimeId,prompt,emit,signal,clientRequestId=null,turnId=randomUUID(),images=[]}){
+    async chat({runtimeId,prompt,emit,signal,clientRequestId=null,turnId=randomUUID(),images=[],dispatchLease=null}){
       const runtime=await this.preflight(runtimeId);
       if(signal?.aborted)throw Object.assign(new Error('client disconnected'),{statusCode:499});
       turnStore.start({runtimeId,turnId,emit,clientRequestId});frames=frameBufferFactory();record('turn_started',turnId);
@@ -118,9 +132,19 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
         const onDisconnect=()=>{turnStore.detached(turnId);record('client_disconnected',turnId)};
         signal?.addEventListener('abort',onDisconnect,{once:true});
         if(signal?.aborted)onDisconnect();
-        await transport.sendPrompt({sessionName:runtime.sessionName,turnId,prompt,delayMs:config.submitDelayMs});
-        turnStore.received(turnId);record('runtime_send_confirmed',turnId);scheduleThoughts(turnStore.get());
+        const result=await transport.sendPrompt({sessionName:runtime.sessionName,turnId,prompt,delayMs:config.submitDelayMs,dispatchLease});
+        const turn=turnStore.get();turnStore.submitted(turnId);record('input_submitted',turnId);
+        if(!result?.deliveryState||result.deliveryState==='input_accepted')acceptTurn(turn);
+        else if(result.deliveryState==='delivery_failed')await failUnaccepted(turn,result.code);
+        else if(result.deliveryState==='input_submitted'){scheduleAcceptance(turn)}
+        else{turnStore.deliveryUncertain(turnId,result.code||'DELIVERY_UNCERTAIN');record('delivery_uncertain',turnId,{errorCode:result.code||'DELIVERY_UNCERTAIN'});scheduleAcceptance(turn)}
       }catch(error){
+        if(error?.deliveryUncertain===true&&turnStore.matches(runtimeId,turnId)){
+          const turn=turnStore.get();turnStore.submitted(turnId);turnStore.deliveryUncertain(turnId,error.code||'DELIVERY_UNCERTAIN');record('delivery_uncertain',turnId,{errorCode:error.code||'DELIVERY_UNCERTAIN'});scheduleAcceptance(turn);return {turnId};
+        }
+        if(error?.code==='PRODUCTION_LEASE_CHANGED'&&turnStore.matches(runtimeId,turnId)){
+          turnStore.discard(runtimeId,turnId);await imageStore?.finishTurn?.(turnId,'not_delivered');record('dispatch_lease_rejected',turnId,{errorCode:error.code});error.retryableBeforeDispatch=true;throw Object.assign(error,{streamStarted:true});
+        }
         if(turnStore.matches(runtimeId,turnId)){
           try{turnStore.finish(runtimeId,turnId,turnEvent.error(turnId,error.message));await imageStore?.finishTurn?.(turnId,'failed');record('node_finalized',turnId,{terminal:'turn_error',active:false})}catch{}
         }
@@ -128,11 +152,20 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
       }
       return {turnId};
     },
-    async diagnosticChat({runtimeId,prompt,emit,turnId=randomUUID()}){
+    async recoverInterruptedDelivery({runtimeId,turnId,clientRequestId,prompt,createdAt,dispatchLease}){
+      if(!transport.recoverDelivery)return {state:'delivery_uncertain',code:'RECOVERY_UNSUPPORTED'};
+      const result=await transport.recoverDelivery({turnId,prompt,createdAt,dispatchLease});
+      if(result?.deliveryState==='delivery_failed'){
+        const event=turnEvent.error(turnId,'消息未被 Claude 接受',result.code||'DELIVERY_NOT_ACCEPTED');
+        turnStore.recoverTerminal({runtimeId,turnId,clientRequestId,event,createdAt});record('delivery_failed_recovered',turnId,{errorCode:event.code});return event;
+      }
+      return {state:result?.deliveryState||'delivery_uncertain',code:result?.code||null};
+    },
+    async diagnosticChat({runtimeId,prompt,emit,turnId=randomUUID(),dispatchLease=null}){
       const runtime=await this.preflight(runtimeId,{allowDisabled:true});
       turnStore.start({runtimeId,turnId,emit});frames=frameBufferFactory();
       turnStore.emit(runtimeId,turnId,turnEvent.started(turnId));
-      try{await transport.sendPrompt({sessionName:runtime.sessionName,turnId,prompt,delayMs:config.submitDelayMs})}
+      try{await transport.sendPrompt({sessionName:runtime.sessionName,turnId,prompt,delayMs:config.submitDelayMs,dispatchLease})}
       catch(error){turnStore.finish(runtimeId,turnId,turnEvent.error(turnId,error.message));throw Object.assign(error,{streamStarted:true})}
       return {turnId};
     },

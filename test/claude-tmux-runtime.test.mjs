@@ -4,9 +4,9 @@ import { createClaudeIngress } from '../src/hooks/claude-ingress.mjs';
 import { createClaudeTmuxRuntime } from '../src/runtimes/claude-tmux.mjs';
 import { createTurnStore } from '../src/turns/turn-store.mjs';
 
-function fixture({state='connected',stopTimeoutMs=20}={}){
+function fixture({state='connected',stopTimeoutMs=20,transportOverrides={}}={}){
   const runtimeRecord={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/srv/app'};const prompts=[],interrupts=[];
-  const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value),inspectSession:async()=>({exists:true,alive:true,active:false})};
+  const completions=[];const transport={sendPrompt:async value=>prompts.push(value),interrupt:async value=>interrupts.push(value),complete:async value=>completions.push(value),inspectSession:async()=>({exists:true,alive:true,active:false}),...transportOverrides};
   const registry={load:async()=>runtimeRecord,get:()=>runtimeRecord,reconcile:async()=>({state,runtime:runtimeRecord,inspection:{alive:state==='connected'}})};
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:250,stopTimeoutMs},transport,registry,turnStore:createTurnStore(),ingress:createClaudeIngress()});
   return {runtime,prompts,interrupts,completions};
@@ -130,4 +130,32 @@ test('turn without thought or tool items emits no thought cloud event',async()=>
   const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'runtime-main',submitDelayMs:0,stopTimeoutMs:10},transport:{sendPrompt:async()=>{},thoughtSnapshot:async()=>({version:1,cursor:1,items:[]}),complete:async()=>{}},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore:createTurnStore(),ingress:createClaudeIngress(),log:()=>{}});
   await runtime.initialize();await runtime.chat({runtimeId:'runtime-main',turnId:'plain-turn',prompt:'fixture',emit:event=>events.push(event)});await runtime.ingestRaw({event:'message_display',message_id:'m',index:0,delta:'ordinary final',final:true});await runtime.ingestRaw({event:'Stop'});
   assert.equal(events.some(event=>event.type==='thought_process'),false);assert.equal(events.some(event=>event.type==='segment_delta'),false);
+});
+
+test('definitive negative acceptance writes a terminal delivery error and releases the active turn',async()=>{
+  const {runtime}=fixture({transportOverrides:{sendPrompt:async()=>({deliveryState:'delivery_failed',code:'DELIVERY_NOT_ACCEPTED'})}}),events=[];await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'negative-turn',clientRequestId:'negative-request',prompt:'not accepted',emit:event=>events.push(event)});
+  const status=runtime.turnStatus('negative-turn');assert.equal(runtime.hasActiveTurn(),false);assert.equal(status.state,'delivery_failed');assert.equal(status.receivedByRuntime,false);assert.equal(status.errorCode,'DELIVERY_NOT_ACCEPTED');
+  assert.deepEqual(events.map(event=>event.type),['turn_started','turn_error']);assert.equal(events.at(-1).code,'DELIVERY_NOT_ACCEPTED');
+});
+
+test('ambiguous acceptance does not resend and keeps the turn active until authoritative evidence',async()=>{
+  let sends=0,statusCalls=0;const {runtime}=fixture({transportOverrides:{sendPrompt:async()=>{sends++;return {deliveryState:'delivery_uncertain',code:'CONFLICTING_OUTPUT_EVIDENCE'}},deliveryStatus:async()=>{statusCalls++;return {deliveryState:'delivery_uncertain',code:'CONFLICTING_OUTPUT_EVIDENCE'}}}});await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'uncertain-turn',prompt:'one delivery',emit:()=>{}});await new Promise(resolve=>setTimeout(resolve,320));
+  assert.equal(sends,1);assert.ok(statusCalls>=1);assert.equal(runtime.turnStatus('uncertain-turn').state,'delivery_uncertain');assert.equal(runtime.hasActiveTurn(),true);
+  await runtime.ingestRaw({event:'Stop'});assert.equal(runtime.hasActiveTurn(),false);
+});
+
+test('a late bridge response is reconciled without a duplicate send',async()=>{
+  let sends=0,statusCalls=0;const timeout=Object.assign(new Error('late bridge'),{code:'BRIDGE_TIMEOUT',deliveryUncertain:true});
+  const {runtime}=fixture({transportOverrides:{sendPrompt:async()=>{sends++;throw timeout},deliveryStatus:async()=>{statusCalls++;return {deliveryState:'input_accepted'}}}});await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'late-turn',prompt:'exactly once',emit:()=>{}});await new Promise(resolve=>setTimeout(resolve,320));
+  assert.equal(sends,1);assert.ok(statusCalls>=1);assert.equal(runtime.turnStatus('late-turn').receivedByRuntime,true);
+  await runtime.ingestRaw({event:'Stop'});
+});
+
+test('input_submitted remains distinct until transcript acceptance is observed',async()=>{
+  let statusCalls=0;const {runtime}=fixture({transportOverrides:{sendPrompt:async()=>({deliveryState:'input_submitted'}),deliveryStatus:async()=>++statusCalls<2?{deliveryState:'input_submitted'}:{deliveryState:'input_accepted'}}});await runtime.initialize();
+  await runtime.chat({runtimeId:'runtime-main',turnId:'submitted-turn',prompt:'delayed transcript',emit:()=>{}});assert.equal(runtime.turnStatus('submitted-turn').state,'input_submitted');assert.equal(runtime.turnStatus('submitted-turn').receivedByRuntime,false);
+  await new Promise(resolve=>setTimeout(resolve,1350));assert.equal(runtime.turnStatus('submitted-turn').state,'input_accepted');assert.equal(runtime.turnStatus('submitted-turn').receivedByRuntime,true);await runtime.ingestRaw({event:'Stop'});
 });

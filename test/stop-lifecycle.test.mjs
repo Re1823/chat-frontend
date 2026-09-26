@@ -10,7 +10,7 @@ function fixture({hookOnEscape=false}={}){
   const state=createBridgeActiveTurn(),events=[],logs=[];let escapes=0,runtime;
   const stop=createBridgeStopController({state,log:(event,turnId)=>logs.push({event,turnId}),sendEscape:async()=>{escapes++;if(hookOnEscape)await runtime.ingestRaw({event:'Stop'})}});
   const record={runtimeId:'runtime-main',sessionName:'dwell',workspace:'/root'};
-  runtime=createClaudeTmuxRuntime({config:{enabled:true,stopTimeoutMs:5},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore:createTurnStore(),ingress:createClaudeIngress(),log:entry=>logs.push(entry),transport:{sendPrompt:async({turnId})=>{state.reserve(turnId);state.markSent(turnId)},interrupt:(_,id)=>stop.stop(id),complete:async id=>state.complete(id)}});
+  runtime=createClaudeTmuxRuntime({config:{enabled:true,stopTimeoutMs:5},registry:{load:async()=>record,get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},turnStore:createTurnStore(),ingress:createClaudeIngress(),log:entry=>logs.push(entry),transport:{sendPrompt:async({turnId})=>{state.reserve(turnId);state.markSubmitted(turnId);state.markAccepted(turnId);return {deliveryState:'input_accepted'}},interrupt:(_,id)=>stop.stop(id),complete:async id=>state.complete(id)}});
   return {state,events,logs,runtime,stop,escapes:()=>escapes,start:async(id='test-turn',signal)=>runtime.chat({signal,runtimeId:record.runtimeId,turnId:id,prompt:'mock only',emit:e=>events.push(e)}),halt:(id='test-turn')=>runtime.stop({runtimeId:record.runtimeId,turnId:id})};
 }
 const inactive=f=>{assert.equal(f.runtime.hasActiveTurn(),false);assert.equal(f.runtime.activeTurnId(),null);assert.equal(f.state.status().active,false);assert.equal(f.state.status().activeTurnId,null)};
@@ -38,7 +38,7 @@ test('F: MessageDisplay stays internal and normal Stop still completes the turn'
   const f=fixture();await f.start();await f.runtime.ingestRaw({event:'MessageDisplay',message_id:'m',index:0,delta:'mock reply',final:true});await f.runtime.ingestRaw({event:'Stop'});inactive(f);assert.equal(f.escapes(),0);assert.deepEqual(f.events.map(e=>e.type),['turn_started','segment_done','turn_done']);
 });
 test('failed Escape never claims release or clears the bridge active turn',async()=>{
-  const state=createBridgeActiveTurn();state.reserve('t');state.markSent('t');const stop=createBridgeStopController({state,sendEscape:async()=>{throw new Error('failed')}});await assert.rejects(stop.stop('t'),/failed/);assert.equal(state.get().turnId,'t');assert.equal(stop.isPending(),false);
+  const state=createBridgeActiveTurn();state.reserve('t');state.markSubmitted('t');state.markAccepted('t');const stop=createBridgeStopController({state,sendEscape:async()=>{throw new Error('failed')}});await assert.rejects(stop.stop('t'),/failed/);assert.equal(state.get().turnId,'t');assert.equal(stop.isPending(),false);
 });
 
 test('HTTP stop acknowledgement and duplicate return 200; status exposes Node inactive',async()=>{

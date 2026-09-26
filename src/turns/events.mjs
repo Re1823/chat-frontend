@@ -6,7 +6,7 @@ export const turnEvent = {
   albumSaved: (turnId, photo) => ({type:'album_saved', turnId, photo}),
   segmentDone: turnId => ({type:'segment_done', turnId}),
   stopped: turnId => ({type:'turn_stopped', turnId}),
-  error: (turnId, error) => ({type:'turn_error', turnId, error}),
+  error: (turnId, error, code=null) => ({type:'turn_error', turnId, error, ...(code?{code}: {})}),
   done: turnId => ({type:'turn_done', turnId})
 };
 

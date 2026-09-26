@@ -1,4 +1,4 @@
-const fail=reason=>Object.assign(new Error(reason),{reason});
+const fail=(reason,subreason=null)=>Object.assign(new Error(subreason?`${reason}: ${subreason}`:reason),{reason,subreason});
 const strip=value=>String(value??'').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\r/g,'');
 const forbidden=/oauth|opening browser|sign[ -]?in|log[ -]?in|account selection|choose (?:an )?account|theme|permission (?:request|prompt|required)|allow this tool|approve tool/i;
 export const POST_TRUST_POLL_MS=250,POST_TRUST_DEADLINE_MS=30000,READY_STABILIZATION_MS=1000;
@@ -26,34 +26,49 @@ export function classifyStartupScreen(screen){
  return {kind:'UNKNOWN',interactive:/\b(?:enter|esc|cancel|continue|select|choose)\b|(?:^|\n)\s*[❯>]?\s*\d+\.\s+/im.test(text),text};
 }
 
-const startupFail=reason=>{throw fail(reason)};
+const startupFail=(reason,subreason=null)=>{throw fail(reason,subreason)};
+export function transcriptReadinessState(transcript={}){
+ if(transcript.wrongSessionRecord===true)return {state:'failed',subreason:'FAILED_TRANSCRIPT_SESSION'};
+ if(transcript.hardFailure===true||transcript.reason==='MALFORMED_STABLE_RECORD'||(transcript.parseable===false&&transcript.writeInProgress!==true))return {state:'failed',subreason:'MALFORMED_STABLE_RECORD'};
+ if(transcript.writeInProgress===true)return {state:'waiting',subreason:'WRITE_IN_PROGRESS'};
+ const recordCount=transcript.validRecordCount??transcript.recordCount;if(recordCount===0)return {state:'waiting',subreason:'WAITING_FOR_TRANSCRIPT'};
+ if(transcript.startupStructureValid===false||transcript.orphanStartupRecord===true)return {state:'waiting',subreason:'WAITING_FOR_VALID_CHAIN'};
+ if(transcript.validSessionTranscript===false||transcript.resumeMilestone!==true)return {state:'waiting',subreason:'WAITING_FOR_STARTUP_EVIDENCE'};
+ if(transcript.parseable!==true)return {state:'waiting',subreason:transcript.reason||'WAITING_FOR_TRANSCRIPT'};
+ return {state:'ready',subreason:null};
+}
 export function durableReadyEvidence(transcript={}){
  if(transcript.wrongSessionRecord===true)startupFail('FAILED_TRANSCRIPT_SESSION');
  if(transcript.startupStructureValid===false||transcript.orphanStartupRecord===true)startupFail('FAILED_TRANSCRIPT_STRUCTURE');
- return transcript.parseable===true&&transcript.transcriptWritable===true;
+ return transcript.parseable===true&&transcript.transcriptWritable===true&&transcript.resumeMilestone===true;
 }
 export async function waitForPostTrustReady({controller,pollMs=POST_TRUST_POLL_MS,deadlineMs=POST_TRUST_DEADLINE_MS,now=Date.now,sleep=ms=>new Promise(r=>setTimeout(r,ms)),baseline}={}){
- const started=now();let unknown=[],stableSince=null,uiReadyEvidence=false;
+ const started=now();let unknown=[],stableSince=null,uiReadyEvidence=false,lastSubreason='WAITING_FOR_TRANSCRIPT';
  while(now()-started<=deadlineMs){
-  const runtime=await controller.runtimeEvidence(),transcript=await controller.transcriptEvidence(),screen=await controller.screen(),semantic=classifyStartupScreen(screen);
+  const runtime=await controller.runtimeEvidence(),transcript=await controller.transcriptEvidence(),startup=controller.startupEvidence?await controller.startupEvidence():{fatal:false,frontendMcpConnected:true,frontendMcpDisconnected:false},screen=await controller.screen(),semantic=classifyStartupScreen(screen);
+  if(startup.fatal===true)startupFail(startup.fatalReason||'FAILED_STARTUP_FATAL');
+  if(startup.frontendMcpDisconnected===true)startupFail('FAILED_MCP_DISCONNECTED');
   if(runtime.processAlive!==true)startupFail('FAILED_PROCESS_EXIT');
   if(runtime.exactSession!==true)startupFail('FAILED_SESSION_MISMATCH');
   if(runtime.ownershipIntact!==true||runtime.unexpectedClaudeOwner===true||runtime.unexpectedHelperOwner===true)startupFail('FAILED_OWNERSHIP_MISMATCH');
   if(runtime.uid!==0||runtime.home!=='/root'||runtime.canonicalCwd!=='/root')startupFail('FAILED_MANAGED_CONTEXT');
-  if(transcript.parseable!==true)startupFail('FAILED_TRANSCRIPT_PARSE');
-  if(transcript.user!==baseline.user)startupFail('UNEXPECTED_USER_RECORD');
-  if(transcript.assistant!==baseline.assistant)startupFail('UNEXPECTED_ASSISTANT_RECORD');
-  if(transcript.compact===true)startupFail('UNEXPECTED_COMPACT');
+  const transcriptState=transcriptReadinessState(transcript);lastSubreason=transcriptState.subreason||lastSubreason;
+  if(transcriptState.state==='failed')startupFail(transcriptState.subreason==='FAILED_TRANSCRIPT_SESSION'?'FAILED_TRANSCRIPT_SESSION':'FAILED_TRANSCRIPT_PARSE',transcriptState.subreason);
+  if(transcriptState.state==='ready'){
+   if(transcript.user!==baseline.user)startupFail('UNEXPECTED_USER_RECORD');
+   if(transcript.assistant!==baseline.assistant)startupFail('UNEXPECTED_ASSISTANT_RECORD');
+   if((transcript.compactCount??(transcript.compact===true?1:0))>(baseline.compactCount||0))startupFail('UNEXPECTED_COMPACT');
+  }
   uiReadyEvidence ||= semantic.kind==='READY';
   if(['TRUST_GATE','TRUST_GATE_CONFIRMED','BLANK_REDRAW','TRANSITIONAL_REDRAW'].includes(semantic.kind)){unknown=[]}
   else if(['OAUTH','LOGIN','THEME','PERMISSION_MODE','PERMISSION','MCP_GATE','RESUME_CONFIRMATION'].includes(semantic.kind)){startupFail('UNEXPECTED_POST_TRUST_GATE')}
   else {const signature=semantic.text.replace(/\s+/g,' ').trim();unknown=unknown.filter(item=>item.signature===signature);unknown.push({signature,at:now()});if(unknown.length>=3&&unknown.at(-1).at-unknown.at(-3).at>=500&&semantic.interactive)startupFail('UNEXPECTED_POST_TRUST_GATE')}
-  const durable=durableReadyEvidence(transcript)&&await controller.readyEvidence(runtime,transcript)===true;
+  const durable=transcriptState.state==='ready'&&durableReadyEvidence(transcript)&&startup.frontendMcpConnected===true&&await controller.readyEvidence(runtime,transcript,startup)===true;
   if(durable){stableSince??=now();if(now()-stableSince>=READY_STABILIZATION_MS)return {state:'READY',semantic,inputCount:1,uiReadyEvidence,stabilizedMs:now()-stableSince}}
   else stableSince=null;
   const remaining=deadlineMs-(now()-started);if(remaining<=0)break;await sleep(Math.min(pollMs,remaining));
  }
- startupFail('FAILED_STARTUP_TIMEOUT');
+ startupFail('FAILED_STARTUP_TIMEOUT',lastSubreason);
 }
 
 export async function readWorkspaceTrustDiagnostic({machineStatePath='/root/.claude.json',readFileFn}={}){

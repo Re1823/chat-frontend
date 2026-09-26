@@ -121,7 +121,7 @@ test('MCP -> authenticated Node -> active turn -> fake bridge Stop closes once a
   const bridge=createBridgeActiveTurn(),events=[],turnStore=createTurnStore();let escapes=0;
   const stopper=createBridgeStopController({state:bridge,sendEscape:async()=>{escapes++}});
   const record={runtimeId:'claude-main',sessionName:'dwell-claude',workspace:'/root'};
-  const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'claude-main',stopTimeoutMs:5},turnStore,ingress:createClaudeIngress(),log:()=>{},registry:{get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},transport:{sendPrompt:async({turnId})=>{bridge.reserve(turnId);bridge.markSent(turnId)},interrupt:(_,id)=>stopper.stop(id),complete:async id=>bridge.complete(id)}});
+  const runtime=createClaudeTmuxRuntime({config:{enabled:true,runtimeId:'claude-main',stopTimeoutMs:5},turnStore,ingress:createClaudeIngress(),log:()=>{},registry:{get:()=>record,reconcile:async()=>({state:'connected',runtime:record})},transport:{sendPrompt:async({turnId})=>{bridge.reserve(turnId);bridge.markSubmitted(turnId);bridge.markAccepted(turnId);return {deliveryState:'input_accepted'}},interrupt:(_,id)=>stopper.stop(id),complete:async id=>bridge.complete(id)}});
   await runtime.chat({runtimeId:'claude-main',turnId:'integration',prompt:'fake transport only',emit:e=>events.push(e)});
   const secret='z'.repeat(32),server=createDwellServer({claudeRuntime:runtime,frontendDeliverySecret:secret});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));t.after(()=>{server.closeAllConnections();server.close()});

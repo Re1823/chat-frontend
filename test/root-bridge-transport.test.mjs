@@ -27,20 +27,20 @@ test('transport maps methods to the five fixed bridge operations without root pa
   assert.equal(await transport.hasSession('ignored'),true);
   assert.deepEqual(await transport.inspectSession('ignored'),{exists:true,alive:true,active:false,activeTurnId:null,panes:[]});
   assert.deepEqual(await transport.createSession({sessionName:'evil',workspace:'/tmp',command:'sh',args:['-c','id']}),{created:true});
-  await transport.sendPrompt({sessionName:'evil',turnId:'turn-1',prompt:'hello'});
+  await transport.sendPrompt({sessionName:'evil',turnId:'turn-1',prompt:'hello',dispatchLease:{sessionId:'session-a',generation:8}});
   await transport.interrupt('evil','turn-1');
   await transport.complete('turn-1');
-  assert.deepEqual(calls,[{op:'status'},{op:'status'},{op:'ensure'},{op:'stop',turnId:'turn-1'},{op:'complete',turnId:'turn-1'}]);
-  assert.deepEqual(sendCalls,[{op:'send',turnId:'turn-1',prompt:'hello'}]);
+  assert.deepEqual(calls,[{op:'status'},{op:'status'},{op:'ensure'},{op:'stop',turnId:'turn-1'}]);
+  assert.deepEqual(sendCalls,[{op:'send',turnId:'turn-1',prompt:'hello',lease:{sessionId:'session-a',generation:8}},{op:'complete',turnId:'turn-1',terminalType:'turn_done'}]);
 });
 
-test('transport gives send a dedicated five second client while status keeps the short default',async()=>{
+test('transport gives transcript acceptance a dedicated 25 second client while status keeps the short default',async()=>{
   const timeouts=[];
   const connect=()=>{const socket=fakeConnection('{"ok":true,"running":true}\n');socket.setTimeout=value=>timeouts.push(value);return socket};
-  const transport=createRootBridgeTransport({request:createRootBridgeClient({connect}),sendRequest:createRootBridgeClient({connect,timeoutMs:5000})});
+  const transport=createRootBridgeTransport({request:createRootBridgeClient({connect}),sendRequest:createRootBridgeClient({connect,timeoutMs:25000})});
   await transport.hasSession();
   await transport.sendPrompt({turnId:'turn-2',prompt:'hello'});
-  assert.deepEqual(timeouts,[1500,5000]);
+  assert.deepEqual(timeouts,[1500,25000]);
 });
 
 test('transport exposes the authoritative bridge turn owner to the queue gate',async()=>{

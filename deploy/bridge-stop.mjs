@@ -13,7 +13,7 @@ export function createBridgeStopController({state,sendEscape,log=()=>{}}){
         log('stale_stop_rejected',turnId);
         return Promise.reject(Object.assign(new Error('turnId mismatch'),{status:409}));
       }
-      if(state.get().phase==='sending')return Promise.reject(Object.assign(new Error('turn input is still being sent'),{status:409}));
+      if(state.get().phase==='input_submitting')return Promise.reject(Object.assign(new Error('turn input is still being sent'),{status:409}));
       const operation=Promise.resolve().then(async()=>{
         log('stop_requested',turnId);
         // A normal Stop hook can release this turn while the operation is queued.

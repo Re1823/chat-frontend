@@ -21,7 +21,7 @@ test('stop remains unconfirmed on timeout',async()=>{
 
 
 test('delivery metadata distinguishes pending dispatch from acknowledged receipt and expires safely',()=>{
- const store=createTurnStore();store.start({runtimeId:'r',turnId:'t',emit(){}});store.sending('t');assert.equal(store.status('t').receivedByRuntime,null);store.received('t');assert.equal(store.status('t').receivedByRuntime,true);store.finish('r','t',{type:'turn_done'});
+ const store=createTurnStore();store.start({runtimeId:'r',turnId:'t',emit(){}});store.sending('t');assert.equal(store.status('t').receivedByRuntime,false);store.submitted('t');assert.equal(store.status('t').state,'input_submitted');store.accepted('t');assert.equal(store.status('t').receivedByRuntime,true);store.finish('r','t',{type:'turn_done'});
  const copy=store.status('t');copy.active=true;assert.equal(store.status('t').active,false);
  for(let i=0;i<256;i++){store.start({runtimeId:'r',turnId:'other-'+i,emit(){}});store.discard('r','other-'+i)}assert.equal(store.status('t'),null);
 });

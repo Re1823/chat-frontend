@@ -5,7 +5,7 @@ export function createTurnStore({journalTtlMs=20*60*1000,maxTurns=256,maxEventsP
   let totalJournalBytes=0;
   const iso=()=>new Date(now()).toISOString();
   const update=(id,patch)=>{const item=metadata.get(id);if(item)Object.assign(item,patch,{updatedAt:iso()})};
-  const publicStatus=item=>item?{turnId:item.turnId,clientRequestId:item.clientRequestId,state:item.state,active:item.active,receivedByRuntime:item.receivedByRuntime,hasOutput:item.hasOutput,finished:item.finished,stopped:item.stopped,error:item.error,detached:item.detached,createdAt:item.createdAt,updatedAt:item.updatedAt,completedAt:item.completedAt}:null;
+  const publicStatus=item=>item?{turnId:item.turnId,clientRequestId:item.clientRequestId,state:item.state,active:item.active,receivedByRuntime:item.receivedByRuntime,hasOutput:item.hasOutput,finished:item.finished,stopped:item.stopped,error:item.error,errorCode:item.errorCode||null,detached:item.detached,streamAttached:item.streamAttached!==false,createdAt:item.createdAt,updatedAt:item.updatedAt,completedAt:item.completedAt}:null;
   const remove=id=>{const item=metadata.get(id);if(!item)return;totalJournalBytes-=item.journalBytes;metadata.delete(id);if(item.clientRequestId)requestIndex.set(item.clientRequestId,{status:'EXPIRED',expiresAt:now()+journalTtlMs})};
   const gc=()=>{
     const cutoff=now()-journalTtlMs;
@@ -28,7 +28,7 @@ export function createTurnStore({journalTtlMs=20*60*1000,maxTurns=256,maxEventsP
     return journalEvent;
   };
   const deliver=(turn,event)=>{try{turn.emit?.(event)}catch{update(turn.turnId,{detached:true});turn.emit=null}};
-  const endMetadata=(turn,event)=>update(turn.turnId,{active:false,finished:true,completedAt:iso(),stopped:event.type==='turn_stopped',state:event.type==='turn_stopped'?'stopped':event.type==='turn_error'?'error':'finished',error:event.type==='turn_error'?'reply_failed':null});
+  const endMetadata=(turn,event)=>update(turn.turnId,{active:false,finished:true,completedAt:iso(),stopped:event.type==='turn_stopped',state:event.type==='turn_stopped'?'stopped':event.type==='turn_error'&&event.code==='DELIVERY_NOT_ACCEPTED'?'delivery_failed':event.type==='turn_error'?'error':'finished',error:event.type==='turn_error'?String(event.error||'reply_failed'):null,errorCode:event.type==='turn_error'?event.code||'REPLY_FAILED':null,...(event.code==='DELIVERY_NOT_ACCEPTED'?{receivedByRuntime:false}:{})});
   const inactiveWaiters=new Set();
   const settleWaiters=()=>{for(const resolve of inactiveWaiters)resolve(true);inactiveWaiters.clear()};
   const requireActive=(runtimeId,turnId)=>{
@@ -56,7 +56,7 @@ export function createTurnStore({journalTtlMs=20*60*1000,maxTurns=256,maxEventsP
     start({runtimeId,turnId,emit,clientRequestId=null}){
       if(active)throw Object.assign(new Error('Claude tmux runtime 当前已有活动回复'),{statusCode:409});
       if(clientRequestId){const request=requestIndex.get(clientRequestId);if(request?.turnId&&request.turnId!==turnId)throw Object.assign(new Error('clientRequestId 已绑定其他 turn'),{statusCode:409});requestIndex.set(clientRequestId,{status:'FOUND',turnId,createdAt:request?.createdAt||iso()})}
-      const createdAt=iso();metadata.set(turnId,{turnId,clientRequestId,state:'pre_turn',active:true,receivedByRuntime:false,hasOutput:false,finished:false,stopped:false,error:null,detached:false,createdAt,updatedAt:createdAt,completedAt:null,nextSeq:1,latestSeq:0,events:[],journalBytes:0,recoverable:true,journalOverflow:false});
+      const createdAt=iso();metadata.set(turnId,{turnId,clientRequestId,state:'reserved',active:true,receivedByRuntime:false,hasOutput:false,finished:false,stopped:false,error:null,errorCode:null,detached:false,streamAttached:true,createdAt,updatedAt:createdAt,completedAt:null,nextSeq:1,latestSeq:0,events:[],journalBytes:0,recoverable:true,journalOverflow:false});
       gc();
       active={runtimeId,turnId,emit,state:'running',closed:false};
       return active;
@@ -68,14 +68,20 @@ export function createTurnStore({journalTtlMs=20*60*1000,maxTurns=256,maxEventsP
       gc();const item=metadata.get(turnId);if(!item)return null;
       return {...publicStatus(item),events:item.recoverable?item.events.filter(event=>event.seq>afterSeq).map(event=>({...event})):[],latestSeq:item.latestSeq,recoverable:item.recoverable,journalOverflow:item.journalOverflow};
     },
-    sending(turnId){update(turnId,{state:'sending',receivedByRuntime:null})},
-    received(turnId){const value=metadata.get(turnId);update(turnId,{receivedByRuntime:true,...(!value?.finished?{state:value?.hasOutput?'streaming':'received'}:{})})},
-    detached(turnId){update(turnId,{detached:true});if(active?.turnId===turnId)active.emit=null},
+    sending(turnId){update(turnId,{state:'input_submitting',receivedByRuntime:false})},
+    submitted(turnId){update(turnId,{state:'input_submitted',receivedByRuntime:false})},
+    accepted(turnId){const value=metadata.get(turnId);update(turnId,{receivedByRuntime:true,...(!value?.finished?{state:value?.hasOutput?'streaming':'input_accepted'}:{})})},
+    received(turnId){this.accepted(turnId)},
+    running(turnId){const value=metadata.get(turnId);if(value&&!value.finished)update(turnId,{state:value.hasOutput?'streaming':'running',receivedByRuntime:true})},
+    deliveryUncertain(turnId,reason='DELIVERY_UNCERTAIN'){update(turnId,{state:'delivery_uncertain',receivedByRuntime:null,errorCode:reason})},
+    detached(turnId,{preserveInternal=false}={}){update(turnId,{detached:true,streamAttached:false});if(!preserveInternal&&active?.turnId===turnId)active.emit=null},
+    attached(turnId){update(turnId,{detached:false,streamAttached:true})},
     matches(runtimeId,turnId){return !!active&&active.runtimeId===runtimeId&&active.turnId===turnId},
     emit(runtimeId,turnId,event){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;const journalEvent=append(turn,event);if(event.type==='segment_delta'||event.type==='assistant_message')update(turnId,{hasOutput:true,receivedByRuntime:true,state:'streaming'});deliver(turn,journalEvent);return true},
     requestStop(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.state==='running')turn.state='stop_requested';return turn},
     finish(runtimeId,turnId,event){return close(requireActive(runtimeId,turnId),event)},
-    discard(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;update(turnId,{active:false,finished:true,completedAt:iso(),state:'not_delivered',receivedByRuntime:false});turn.closed=true;turn.state='discarded';active=null;settleWaiters();gc();return true},
+    discard(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;const item=metadata.get(turnId);update(turnId,{active:false,finished:true,completedAt:iso(),state:'not_delivered',receivedByRuntime:false});if(item?.clientRequestId)requestIndex.delete(item.clientRequestId);turn.closed=true;turn.state='discarded';active=null;settleWaiters();gc();return true},
+    recoverTerminal({runtimeId,turnId,clientRequestId,event,createdAt}){if(active||metadata.has(turnId))return false;const at=createdAt||iso();metadata.set(turnId,{turnId,clientRequestId,state:'reserved',active:true,receivedByRuntime:false,hasOutput:false,finished:false,stopped:false,error:null,errorCode:null,detached:true,streamAttached:false,createdAt:at,updatedAt:at,completedAt:null,nextSeq:1,latestSeq:0,events:[],journalBytes:0,recoverable:true,journalOverflow:false});active={runtimeId,turnId,emit:null,state:'running',closed:false};append(active,{type:'turn_started',turnId});return close(active,event)},
     waitForInactive(runtimeId,turnId,timeoutMs){
       if(!this.matches(runtimeId,turnId))return Promise.resolve(true);
       return new Promise(resolve=>{const timer=setTimeout(()=>{inactiveWaiters.delete(done);resolve(false)},timeoutMs);const done=value=>{clearTimeout(timer);resolve(value)};inactiveWaiters.add(done)});

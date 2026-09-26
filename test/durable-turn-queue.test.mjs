@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createDurableTurnQueue} from '../src/turns/durable-turn-queue.mjs';
@@ -30,8 +30,8 @@ test('server-confirmed pending items survive restart and keep their order',async
   const f=await fixture();let ready=false;
   const first=createDurableTurnQueue({path:f.path,retryMs:5,canDispatch:async()=>ready,dispatch:async()=>{throw new Error('must not dispatch')}});await first.initialize();
   await first.enqueue({clientRequestId:'persist-A',runtimeId:'claude-main',prompt:'A'});await first.enqueue({clientRequestId:'persist-B',runtimeId:'claude-main',prompt:'B'});
-  const stored=JSON.parse(await readFile(f.path,'utf8'));assert.deepEqual(stored.records.map(item=>item.prompt),['A','B']);
-  const received=[];const second=createDurableTurnQueue({path:f.path,retryMs:5,canDispatch:async()=>ready,dispatch:async(item,emit)=>{received.push(item.prompt);emit({type:'turn_started',turnId:item.turnId});emit({type:'turn_done',turnId:item.turnId})}});await second.initialize();assert.equal(second.snapshot().pending,2);ready=true;await second.drain();await waitFor(()=>received.length===2);assert.deepEqual(received,['A','B']);await f.cleanup();
+  const stored=JSON.parse(await readFile(f.path,'utf8'));assert.deepEqual(stored.records.map(item=>item.prompt),['A','B']);first.close();
+  const received=[];const second=createDurableTurnQueue({path:f.path,retryMs:5,canDispatch:async()=>ready,dispatch:async(item,emit)=>{received.push(item.prompt);emit({type:'turn_started',turnId:item.turnId});emit({type:'turn_done',turnId:item.turnId})}});await second.initialize();assert.equal(second.snapshot().pending,2);ready=true;await second.drain();await waitFor(()=>received.length===2);assert.deepEqual(received,['A','B']);second.close();await f.cleanup();
 });
 
 test('duplicate clientRequestId is idempotent and dispatches exactly once',async()=>{
@@ -50,4 +50,33 @@ test('HTTP retry with the same clientRequestId attaches to one durable queue ite
   const runtime={requestRecovery:()=>({status:'NOT_FOUND'})},server=createDwellServer({claudeRuntime:runtime,turnQueue:queue});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${server.address().port}`,clientRequestId='12345678-1234-4123-8123-123456789abc',body=JSON.stringify({config:{runtime:'claude_tmux',runtimeId:'claude-main'},messages:[{role:'user',content:'once'}],clientRequestId});
   try{const first=await fetch(`${base}/api/chat`,{method:'POST',headers:{'content-type':'application/json'},body}),retry=await fetch(`${base}/api/chat`,{method:'POST',headers:{'content-type':'application/json'},body});assert.equal(first.status,200);assert.equal(retry.status,200);assert.equal(queue.records().length,1);assert.equal(queue.snapshot().pending,1);await first.body.cancel();await retry.body.cancel();const recovery=await (await fetch(`${base}/api/chat/recovery/by-request/${clientRequestId}`)).json();assert.equal(recovery.status,'PENDING')}
   finally{await new Promise(resolve=>server.close(resolve));await f.cleanup()}
+});
+
+test('DELIVERY_NOT_ACCEPTED is terminal, preserves the user message and lets FIFO continue',async()=>{
+  const f=await fixture(),received=[];
+  const queue=createDurableTurnQueue({path:f.path,retryMs:5,dispatch:async(item,emit)=>{received.push(item.prompt);emit({type:'turn_started',turnId:item.turnId});emit(item.prompt==='A'?{type:'turn_error',turnId:item.turnId,error:'not accepted',code:'DELIVERY_NOT_ACCEPTED'}:{type:'turn_done',turnId:item.turnId})}});await queue.initialize();
+  await queue.enqueue({clientRequestId:'negative-A',runtimeId:'claude-main',prompt:'A'});await queue.enqueue({clientRequestId:'negative-B',runtimeId:'claude-main',prompt:'B'});await waitFor(()=>queue.snapshot().items.every(item=>['delivery_failed','finished'].includes(item.status)));
+  assert.deepEqual(received,['A','B']);const records=queue.records();assert.equal(records[0].prompt,'A');assert.equal(records[0].errorCode,'DELIVERY_NOT_ACCEPTED');assert.equal(records[1].status,'finished');queue.close();await f.cleanup();
+});
+
+test('ambiguous restart evidence blocks later FIFO items and never redispatches the uncertain item',async()=>{
+  const f=await fixture(),createdAt=new Date().toISOString();await writeFile(f.path,JSON.stringify({version:1,records:[{clientRequestId:'uncertain-A',runtimeId:'claude-main',conversationId:'claude-main',prompt:'A',imageIds:[],status:'active',turnId:'turn-A',createdAt,updatedAt:createdAt,finishedAt:null,error:null},{clientRequestId:'uncertain-B',runtimeId:'claude-main',conversationId:'claude-main',prompt:'B',imageIds:[],status:'pending',turnId:null,createdAt,updatedAt:createdAt,finishedAt:null,error:null}]}));
+  let reconciles=0,dispatches=0;const queue=createDurableTurnQueue({path:f.path,retryMs:20,reconcileInterrupted:async()=>{reconciles++;return {state:'delivery_uncertain',code:'AMBIGUOUS_TRANSCRIPT'}},dispatch:async()=>{dispatches++}});await queue.initialize();await waitFor(()=>reconciles>=1);await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(dispatches,0);assert.equal(queue.snapshot().items[0].status,'delivery_uncertain');assert.equal(queue.snapshot().items[1].status,'pending');queue.close();await f.cleanup();
+});
+
+test('restart reconciliation can terminally fail the phantom and continue with the next item',async()=>{
+  const f=await fixture(),createdAt=new Date().toISOString();await writeFile(f.path,JSON.stringify({version:1,records:[{clientRequestId:'recover-A',runtimeId:'claude-main',conversationId:'claude-main',prompt:'A',imageIds:[],status:'active',turnId:'turn-A',createdAt,updatedAt:createdAt,finishedAt:null,error:null},{clientRequestId:'recover-B',runtimeId:'claude-main',conversationId:'claude-main',prompt:'B',imageIds:[],status:'pending',turnId:null,createdAt,updatedAt:createdAt,finishedAt:null,error:null}]}));
+  const dispatched=[];const queue=createDurableTurnQueue({path:f.path,retryMs:5,reconcileInterrupted:async item=>({type:'turn_error',turnId:item.turnId,error:'not accepted',code:'DELIVERY_NOT_ACCEPTED'}),dispatch:async(item,emit)=>{dispatched.push(item.prompt);emit({type:'turn_started',turnId:item.turnId});emit({type:'turn_done',turnId:item.turnId})}});await queue.initialize();await waitFor(()=>queue.snapshot().items.every(item=>['delivery_failed','finished'].includes(item.status)));
+  assert.deepEqual(dispatched,['B']);assert.equal(queue.records()[0].prompt,'A');assert.equal(queue.records()[0].errorCode,'DELIVERY_NOT_ACCEPTED');queue.close();await f.cleanup();
+});
+
+test('browser subscriber disconnect does not cancel internal completion',async()=>{
+  const f=await fixture();let finish;const subscriber={emit(){},end(){}};const queue=createDurableTurnQueue({path:f.path,retryMs:5,dispatch:async(item,emit)=>{emit({type:'turn_started',turnId:item.turnId});await new Promise(resolve=>{finish=()=>{emit({type:'turn_done',turnId:item.turnId});resolve()}})}});await queue.initialize();
+  await queue.enqueue({clientRequestId:'disconnect-A',runtimeId:'claude-main',prompt:'A'},subscriber);await waitFor(()=>typeof finish==='function');queue.unsubscribe('disconnect-A',subscriber);assert.equal(queue.snapshot().streamSubscribers,0);finish();await waitFor(()=>queue.snapshot().items[0].status==='finished');queue.close();await f.cleanup();
+});
+
+test('lease rejection before Enter leaves the item pending without a terminal delivery',async()=>{
+  const f=await fixture();let dispatches=0,allow=true;const queue=createDurableTurnQueue({path:f.path,retryMs:20,canDispatch:async()=>allow,dispatch:async(item,emit)=>{dispatches++;allow=false;emit({type:'turn_started',turnId:item.turnId});throw Object.assign(new Error('owner changed'),{code:'PRODUCTION_LEASE_CHANGED',retryableBeforeDispatch:true})}});await queue.initialize();
+  await queue.enqueue({clientRequestId:'lease-A',runtimeId:'claude-main',prompt:'A'});await waitFor(()=>dispatches===1&&queue.snapshot().items[0].status==='pending');assert.equal(queue.records()[0].prompt,'A');assert.equal(queue.snapshot().items[0].finishedAt,null);queue.close();await f.cleanup();
 });

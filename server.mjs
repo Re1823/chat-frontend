@@ -100,6 +100,7 @@ const CLIENT_REQUEST_ID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab
 const internalPromptFor=(prompt,images)=>images.length?`<frontend_image_context>\nThis frontend turn includes ${images.length} image attachment${images.length===1?'':'s'} available only through mcp__qiuqiu-frontend__read_frontend_image. Image IDs: ${images.map(image=>image.imageId).join(', ')}. Read them when needed to understand this turn.\n</frontend_image_context>${prompt?`\n\n${prompt}`:''}`:prompt;
 
 export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoordinator=null,log=record=>console.info(JSON.stringify(record)),...options}){
+  const dispatchLease=async()=>{if(!rscCoordinator)return null;const state=await rscCoordinator.snapshot();if(state.state!=='OPEN'||!state.ownerSessionId)throw Object.assign(new Error('production_owner_unavailable'),{statusCode:503,retryableBeforeDispatch:true});return {sessionId:state.ownerSessionId,generation:state.leaseGeneration}};
   const canDispatch=async()=>{
     if(rscCoordinator&&(await rscCoordinator.snapshot()).state!=='OPEN')return false;
     if(claudeRuntime.hasActiveTurn())return false;
@@ -116,7 +117,7 @@ export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoo
       await claudeRuntime.preflight(item.runtimeId);
       const images=item.imageIds?.length?await imageStore?.bind(item.imageIds,{turnId:item.turnId,clientRequestId:item.clientRequestId}):[];
       imageStore?.leaseTurn?.(item.turnId,130000);
-      await claudeRuntime.chat({runtimeId:item.runtimeId,prompt:internalPromptFor(item.prompt,images||[]),emit:forward,clientRequestId:item.clientRequestId,turnId:item.turnId,images:images||[]});
+      await claudeRuntime.chat({runtimeId:item.runtimeId,prompt:internalPromptFor(item.prompt,images||[]),emit:forward,clientRequestId:item.clientRequestId,turnId:item.turnId,images:images||[],dispatchLease:await dispatchLease()});
     };
     try{
       if(rscCoordinator)await rscCoordinator.submit({clientRequestId:item.clientRequestId,turnId:item.turnId,imageIds:item.imageIds||[],conversationId:item.conversationId},run);else await run();
@@ -128,7 +129,8 @@ export function createClaudeTurnQueue({path,claudeRuntime,imageStore=null,rscCoo
       throw error;
     }
   };
-  return createDurableTurnQueue({path,dispatch,canDispatch,log,...options});
+  const reconcileInterrupted=async item=>claudeRuntime.recoverInterruptedDelivery?claudeRuntime.recoverInterruptedDelivery({runtimeId:item.runtimeId,turnId:item.turnId,clientRequestId:item.clientRequestId,prompt:internalPromptFor(item.prompt,(item.imageIds||[]).map(imageId=>({imageId}))),createdAt:item.createdAt,dispatchLease:await dispatchLease()}):{state:'delivery_uncertain',code:'RECOVERY_UNSUPPORTED'};
+  return createDurableTurnQueue({path,dispatch,canDispatch,reconcileInterrupted,log,...options});
 }
 
 export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliverySecret='',ombreService,qiuqiuWorkspace='',validateModelUpstream,imageStore=null,photosStore=null,rscCoordinator=null,rscObservability=null,turnQueue=null,pushStore=null,pushService=null,clientDiagnosticLog=record=>console.info(JSON.stringify(record)) }={}){
@@ -189,7 +191,8 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         if(Object.keys(body).length!==1||body.op!=='run_minimal_test')return json(res,400,{ok:false,error:'Invalid diagnostic request'});
         res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'close'});
         const emit=event=>{writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};
-        try{await claudeRuntime.diagnosticChat({runtimeId:'claude-main',prompt:CLAUDE_CHANNEL_TEST_PROMPT,emit})}catch(error){if(!error.streamStarted)throw error}
+        const lease=rscCoordinator?await rscCoordinator.snapshot():null;
+        try{await claudeRuntime.diagnosticChat({runtimeId:'claude-main',prompt:CLAUDE_CHANNEL_TEST_PROMPT,emit,dispatchLease:lease?{sessionId:lease.ownerSessionId,generation:lease.leaseGeneration}:null})}catch(error){if(!error.streamStarted)throw error}
         return;
       }
       const turnStatusMatch=req.method==='GET'&&new URL(req.url,'http://local').pathname.match(/^\/api\/chat\/turn\/([A-Za-z0-9_-]{1,128})\/status$/);
@@ -289,7 +292,7 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
           await claudeRuntime.preflight(body.config.runtimeId);
           const images=imageIds?.length?await imageStore?.bind(imageIds,{turnId,clientRequestId}):[];
           const internalPrompt=internalPromptFor(prompt,images);
-          const dispatch=async()=>{res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'keep-alive'});const client=new AbortController();res.once('close',()=>{if(!res.writableEnded)client.abort()});const emit=event=>{if(res.destroyed||res.writableEnded)return;writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};try{await claudeRuntime.chat({runtimeId:body.config.runtimeId,prompt:internalPrompt,emit,signal:client.signal,clientRequestId,turnId,images})}catch(error){if(!error.streamStarted)throw error}};
+          const dispatch=async()=>{res.writeHead(200,{'content-type':'application/x-ndjson; charset=utf-8','cache-control':'no-cache',connection:'keep-alive'});const client=new AbortController();res.once('close',()=>{if(!res.writableEnded)client.abort()});const emit=event=>{if(res.destroyed||res.writableEnded)return;writeTurnEvent(res,'ndjson',event);if(claudeRuntime.isTerminalEvent(event))res.end()};const lease=rscCoordinator?await rscCoordinator.snapshot():null;try{await claudeRuntime.chat({runtimeId:body.config.runtimeId,prompt:internalPrompt,emit,signal:client.signal,clientRequestId,turnId,images,dispatchLease:lease?{sessionId:lease.ownerSessionId,generation:lease.leaseGeneration}:null})}catch(error){if(!error.streamStarted)throw error}};
           if(rscCoordinator){imageStore?.leaseTurn?.(turnId,130000);await rscCoordinator.submit({clientRequestId,turnId,imageIds:imageIds||[],conversationId:body.config.runtimeId},dispatch)}else await dispatch();
         }catch(error){claudeRuntime.releaseRequest?.(clientRequestId);throw error}
         return;
