@@ -44,7 +44,7 @@ test('standalone shell uses 100vh while visualViewport chat sizing stays intact'
   assert.match(css,/\.app\{[^}]*height:var\(--vv-bottom,100dvh\)/);assert.match(app,/function syncVisualViewport\(\)/);assert.match(app,/globalThis\.visualViewport\?\.addEventListener\?\.\('resize',scheduleVisualViewportSync\)/);
 });
 
-test('static server serves manifest and icons with PWA MIME types',async()=>{
+test('static server resolves the root by pathname without broadening fallback behavior',async()=>{
   const server=createDwellServer({claudeRuntime:{}});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base=`http://127.0.0.1:${server.address().port}`;
-  try{const manifest=await fetch(base+'/manifest.webmanifest'),icon=await fetch(base+'/app-icon-192.png'),worker=await fetch(base+'/sw.js');assert.equal(manifest.status,200);assert.match(manifest.headers.get('content-type'),/^application\/manifest\+json/);assert.equal(icon.headers.get('content-type'),'image/png');assert.equal(worker.status,200);assert.match(worker.headers.get('content-type'),/^text\/javascript/)}finally{await new Promise(resolve=>server.close(resolve))}
+  try{const root=await fetch(base+'/'),resume=await fetch(base+'/?qiuqiu_resume=notification'),worker=await fetch(base+'/sw.js'),missing=await fetch(base+'/missing-static-resource');assert.equal(root.status,200);assert.match(root.headers.get('content-type'),/^text\/html/);assert.equal(resume.status,200);assert.match(resume.headers.get('content-type'),/^text\/html/);assert.equal(await resume.text(),await root.text());assert.equal(worker.status,200);assert.match(worker.headers.get('content-type'),/^text\/javascript/);assert.equal(missing.status,404);assert.deepEqual(await missing.json(),{error:'Not found'})}finally{await new Promise(resolve=>server.close(resolve))}
 });

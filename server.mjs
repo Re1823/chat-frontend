@@ -330,8 +330,9 @@ export function createDwellServer({claudeRuntime,hookSecret='',frontendDeliveryS
         return json(res,200,await qiuqiuReadiness({workspace:qiuqiuWorkspace,ombreConnected:obDashboardConnected}));
       }
       if(req.method!=='GET')return json(res,405,{error:'Method not allowed'});
-      const pathname=req.url==='/'?'/index.html':new URL(req.url,'http://x').pathname;
-      const file=normalize(join(root,pathname));
+      const {pathname}=new URL(req.url,'http://x');
+      const staticPath=pathname==='/'?'/index.html':pathname;
+      const file=normalize(join(root,staticPath));
       if(!file.startsWith(root))return json(res,403,{error:'Forbidden'});
       try{const data=await readFile(file);res.writeHead(200,{'content-type':mime[extname(file)]||'application/octet-stream'});res.end(data)}catch{json(res,404,{error:'Not found'})}
     }catch(error){if(!res.headersSent)json(res,error.statusCode||500,{error:error.message});else res.end()}
