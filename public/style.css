@@ -44,7 +44,7 @@ footer{padding:14px 20px;background:var(--paper);border-top:1px solid var(--line
 .toast.on{transform:translate(-50%,0);pointer-events:auto}
 
 /* 流式输出期间由脚本逐帧更新当前气泡，避免连续平滑滚动叠加。 */
-.messages.streaming{scroll-behavior:auto}
+.messages,.messages.streaming{scroll-behavior:auto}
 .messages.bottom-anchored>:first-child{margin-top:auto}
 
 /* iOS：以可视 viewport 驱动三段式页面，表单字号不低于 Safari 自动缩放阈值。 */
@@ -125,6 +125,7 @@ main:not(.memory-mode)>.messages{
 main:not(.memory-mode)>footer{
   position:absolute;z-index:3;bottom:0;left:0;right:0;padding:8px 12px calc(12px + env(safe-area-inset-bottom,0px));border:0;background:none;
 }
+.keyboard-open main:not(.memory-mode)>footer{padding-bottom:8px}
 main:not(.memory-mode) .composer{
   display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:14px 14px 12px;
   border:0;border-radius:var(--radius-input);background:#fcfaf7;box-shadow:0 2px 10px #3a302006;
@@ -165,8 +166,7 @@ body:has(main:not(.memory-mode)) .sheet:not(.on),.app:has(main:not(.memory-mode)
 /* Safari viewport 收敛时只执行一次即时底部对齐，避免平滑滚动叠加。 */
 #messages.is-keyboard-transitioning{scroll-behavior:auto}
 
-/* 中间视口只参与测量，不显示错误位置；稳定矩形确认后恢复。 */
-#messages.is-keyboard-transitioning + footer{opacity:0;pointer-events:none}
+/* 视口收敛期间仍允许用户轻点发送；布局由 visualViewport 同步。 */
 
 .connection-note{margin-top:8px;color:#8a8580;font-size:12px;line-height:1.6;font-family:inherit;white-space:normal}.connection-note button{display:block;margin-top:8px;padding:7px 12px;border:1px solid #ded9cf;border-radius:12px;background:transparent;color:inherit;font:inherit;cursor:pointer}
 
@@ -240,6 +240,8 @@ body:has(main:not(.memory-mode)) .connections-detail.leaving:not(.on){visibility
 
 /* A durable album event lives between chat bubbles and opens the real photo record. */
 .album-save-record{width:min(100%,560px);margin:8px 0 10px 50px}.album-save-action{margin:0 0 7px 3px;color:#aaa49b;font-size:11px;font-style:italic}.album-save-card{width:100%;min-width:0;display:grid;grid-template-columns:72px minmax(0,1fr);gap:14px;align-items:center;padding:13px;border:1px solid #ded9d0;border-radius:20px;background:#fffdfa;color:#2d2a27;text-align:left;box-shadow:0 7px 24px #4c40320d;cursor:pointer}.album-save-thumb{position:relative;width:72px;height:72px}.album-save-thumb img{width:100%;height:100%;display:block;object-fit:cover;border-radius:13px}.album-save-star{position:absolute;right:-7px;bottom:-7px;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;background:#b86f55;color:#fff;border:3px solid #fffdfa;font-size:15px}.album-save-copy{min-width:0}.album-save-copy small{display:block;color:#8a857e;font-size:10px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:6px}.album-save-copy strong{display:block;font:600 18px/1.35 Georgia,"Songti SC",serif}.album-save-copy p{margin:5px 0 0;color:#747069;font-size:13px;line-height:1.45;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.album-save-record{max-width:min(100%,440px)}.album-save-action{margin-bottom:4px}.album-save-card{grid-template-columns:52px minmax(0,1fr);gap:10px;padding:8px 10px;max-height:78px;overflow:hidden}.album-save-thumb{width:52px;height:52px}.album-save-copy small{margin-bottom:2px}.album-save-copy strong{font-size:14px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.album-save-copy p{margin-top:2px;font-size:11px}.album-save-star{width:22px;height:22px;font-size:12px;right:-5px;bottom:-5px}
+.message-images.count-1 img{width:min(360px,calc(100vw - 110px));max-width:100%;height:auto;aspect-ratio:var(--photo-ratio,4/3)}
 
 /* Saved-photo detail mirrors the supplied full-page album reference. */
 .photo-detail-page{z-index:9}.photo-detail-page>header{height:72px}.photo-detail-page>header>div{display:flex;align-items:center}.photo-detail-page>header>div button{font-size:18px;display:grid;place-items:center}.photo-detail-page>header svg{width:24px;height:24px}.photo-detail-body{height:calc(var(--vv-bottom,100dvh) - 72px);overflow-y:auto;overflow-x:hidden;padding:10px max(24px,calc((100% - 680px)/2)) calc(48px + env(safe-area-inset-bottom,0px));overscroll-behavior:contain}.photo-detail-image{width:100%;min-height:280px;max-height:min(58dvh,620px);display:grid;place-items:center;background:#f0ede7;overflow:hidden}.photo-detail-image img{display:block;width:100%;height:100%;max-height:min(58dvh,620px);object-fit:contain}.photo-detail-chips{display:flex;gap:8px;flex-wrap:wrap;padding:24px 0 20px}.photo-detail-chips span{border-radius:999px;background:#eeece6;color:#6f6b64;padding:7px 11px;font-size:12px}.photo-detail-caption{font:500 clamp(22px,6vw,32px)/1.55 Georgia,"Songti SC",serif;margin:0;padding:0 0 28px;white-space:pre-wrap;overflow-wrap:anywhere;border-bottom:1px solid #e7e2da}.photo-detail-caption.empty{color:#aaa59d;font-style:italic;font-size:16px}.photo-detail-meta{display:grid}.photo-detail-meta>div{display:grid;grid-template-columns:90px minmax(0,1fr);gap:16px;padding:18px 0;border-bottom:1px solid #e7e2da}.photo-detail-meta small{color:#aaa59d;font-size:13px}.photo-detail-meta span{text-align:right;color:#56524c;font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
@@ -257,3 +259,13 @@ body:has(main:not(.memory-mode)) .connections-detail.leaving:not(.on){visibility
 @media(max-width:390px){.assistant-quick-actions{gap:6px}.assistant-quick-actions button{min-height:70px;border-radius:17px;font-size:9.5px}.assistant-quick-actions svg{width:22px;height:22px}.chat-search-header{left:12px;right:12px;grid-template-columns:minmax(0,1fr) 48px;gap:8px}.chat-search-header label{padding-inline:14px}.chat-search-toolbar{padding-inline:12px;grid-template-columns:44px minmax(0,1fr) 40px 40px}.chat-calendar-sheet{padding-inline:18px;border-radius:30px 30px 0 0}.calendar-days{grid-auto-rows:44px}.calendar-days button{width:40px;height:40px}.chat-day-divider{gap:10px;margin-block:27px 20px}}
 @media(prefers-reduced-motion:reduce){.calendar-backdrop,.chat-calendar-sheet{transition:none}}
 .photo-detail-meta button{justify-self:end;padding:0;border:0;border-bottom:1px solid #aaa49b;background:none;color:#56524c;font:14px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-align:right;overflow-wrap:anywhere;cursor:pointer}
+
+.messages .shopping-approval-card{position:static;width:100%;max-width:100%;min-width:0;flex:none;overflow-wrap:anywhere}
+.shopping-approval-card{position:static;width:100%;max-width:100%;min-width:0;flex:none;overflow-wrap:anywhere}
+.shopping-approval-card{margin:10px 0;padding:18px 20px;border:1px solid var(--line);border-radius:20px;background:var(--paper);box-shadow:0 12px 40px #4d3c2510}
+.shopping-approval-head{display:flex;justify-content:space-between;gap:12px;align-items:center;color:var(--muted);font-size:11px}.shopping-approval-head small{color:var(--accent);letter-spacing:.12em;font-size:10px}.shopping-approval-card h2{font-size:16px;line-height:1.45;margin:12px 0 4px;font-weight:600}.shopping-merchant{font-size:12px;color:var(--muted);margin:0 0 12px}
+.shopping-approval-card dl{margin:0}.shopping-approval-card dl div{display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-size:12px}.shopping-approval-card dt{color:var(--muted)}.shopping-approval-card dd{margin:0;text-align:right;overflow-wrap:anywhere;max-width:72%}
+.shopping-approval-total{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--line);margin-top:10px;padding-top:12px;font-size:13px}.shopping-approval-total strong{font-size:27px;color:var(--accent);font-variant-numeric:tabular-nums}
+.shopping-approval-note{margin:10px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+.shopping-approval-actions{display:flex;gap:10px;margin-top:15px}.shopping-approval-actions button{flex:1;border:1px solid var(--line);border-radius:12px;background:transparent;color:var(--ink);padding:11px;cursor:pointer}.shopping-approval-actions button:last-child{background:var(--ink);border-color:var(--ink);color:var(--paper)}.shopping-approval-actions button:disabled{opacity:.45;cursor:default}
+.shopping-approval-terminal{padding:0;overflow:hidden}.shopping-approval-toggle{display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:14px 18px;border:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}.shopping-approval-summary{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.shopping-approval-summary strong{color:var(--accent);font-variant-numeric:tabular-nums}.shopping-approval-state{flex:none;color:var(--muted);font-size:11px;white-space:nowrap}.shopping-approval-chevron{flex:none;color:var(--muted);font-size:18px;line-height:1;transition:transform .15s ease}.shopping-approval-toggle[aria-expanded="true"] .shopping-approval-chevron{transform:rotate(180deg)}.shopping-approval-terminal .shopping-approval-details{padding:0 20px 18px}

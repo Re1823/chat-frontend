@@ -1,0 +1,55 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright-core';
+import { createDwellServer } from '../server.mjs';
+
+test('iPhone-sized composer sends once beside approval timeline', async () => {
+  const server=createDwellServer();
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const browser=await chromium.launch({channel:'msedge',headless:true});
+  try{
+    const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'});
+    let chatCalls=0;
+    await context.route('**/api/runtimes/claude-tmux/status',route=>route.fulfill({status:200,contentType:'application/json',body:'{"state":"connected","runtimeId":"claude-main"}'}));
+    await context.route('**/api/shopping/approvals',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({purchases:[{purchaseId:'approval-fixture',conversationId:'claude-main',state:'pending_approval',createdAt:Date.now(),approvalNonce:'fixture',snapshot:{goods:'Fixture pen',sku:'Red',quantity:1,subtotalMinor:480,shippingMinor:0,discountMinor:62,totalMinor:418,addressLabel:'Masked'}}]})}));
+    await context.route('**/api/chat',route=>{chatCalls++;return route.fulfill({status:200,contentType:'application/x-ndjson',body:'{"type":"turn_done"}\n'})});
+    const page=await context.newPage();
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.addInitScript(()=>{localStorage.setItem('dwell.provider','claude_tmux');localStorage.setItem('dwell.active','send-tap-fixture');localStorage.setItem('dwell.sessions',JSON.stringify([{id:'send-tap-fixture',provider:'claude_tmux',title:'Fixture',messages:[{role:'user',content:'earlier',createdAt:Date.now()-1000}]}]));});
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.locator('.shopping-approval-card').waitFor();
+    await page.locator('#input').fill('send fixture');
+    await page.waitForFunction(()=>!document.querySelector('#send').disabled);
+    const before=await page.evaluate(()=>{const b=document.querySelector('#send'),r=b.getBoundingClientRect(),top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return {disabled:b.disabled,top:top?.id||top?.tagName,transitioning:document.querySelector('#messages').classList.contains('is-keyboard-transitioning'),footerPointerEvents:getComputedStyle(document.querySelector('main>footer')).pointerEvents,x:r.left+r.width/2,y:r.top+r.height/2}});
+    await page.touchscreen.tap(before.x,before.y);
+    await page.waitForTimeout(150);
+    const after=await page.evaluate(()=>({events:JSON.parse(sessionStorage.getItem('dwell.chat-send-diagnostics.v1')||'[]').flatMap(item=>item.events.map(event=>event.event)),input:document.querySelector('#input').value,overflow:document.documentElement.scrollWidth>innerWidth,cardPosition:getComputedStyle(document.querySelector('.shopping-approval-card')).position}));
+    assert.equal(before.disabled,false);
+    assert.equal(before.transitioning,true);
+    assert.equal(before.footerPointerEvents,'auto');
+    assert.equal(chatCalls,1);
+    assert.equal(after.input,'');
+    assert.equal(after.events.filter(event=>event==='send_attempt').length,1);
+    assert.equal(after.events.filter(event=>event==='fetch_call').length,1);
+    assert.equal(after.overflow,false);
+    assert.equal(after.cardPosition,'static');
+    assert.deepEqual(errors,[]);
+    await page.evaluate(()=>{shoppingApprovals=shoppingApprovals.map(record=>({...record,state:'approved',approvalNonce:null}));renderShoppingApprovalCards()});
+    await page.locator('#input').fill('second fixture');
+    await page.locator('#input').evaluate(input=>input.blur());
+    const second=await page.locator('#send').boundingBox();
+    const beforeSecond=await page.evaluate(()=>{const b=document.querySelector('#send'),r=b.getBoundingClientRect(),top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return {disabled:b.disabled,top:top?.id||top?.tagName,active:document.activeElement?.id,footerPointerEvents:getComputedStyle(document.querySelector('main>footer')).pointerEvents}});
+    await page.touchscreen.tap(second.x+second.width/2,second.y+second.height/2);
+    await page.waitForTimeout(150);
+    assert.equal(chatCalls,2,JSON.stringify(beforeSecond));
+    const final=await page.evaluate(()=>({events:JSON.parse(sessionStorage.getItem('dwell.chat-send-diagnostics.v1')||'[]').flatMap(item=>item.events.map(event=>event.event)),input:document.querySelector('#input').value,overflow:document.documentElement.scrollWidth>innerWidth,cardPosition:getComputedStyle(document.querySelector('.shopping-approval-card')).position}));
+    assert.equal(final.input,'');
+    assert.equal(final.events.filter(event=>event==='send_attempt').length,2);
+    assert.equal(final.events.filter(event=>event==='fetch_call').length,2);
+    assert.equal(final.overflow,false);
+    assert.equal(final.cardPosition,'static');
+    await page.setViewportSize({width:390,height:420});
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+    await context.close();
+  }finally{await browser.close();await new Promise(resolve=>server.close(resolve))}
+});

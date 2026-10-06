@@ -1,8 +1,8 @@
 const CACHE_PREFIX='qiuqiu-shell-';
-const CACHE_NAME='qiuqiu-shell-pwa24-recovery1';
+const CACHE_NAME='qiuqiu-shell-pwa34-close-sync1';
 const SHELL_ASSETS=[
-  '/style.css?v=pwa23',
-  '/app.js?v=pwa24-recovery1',
+  '/style.css?v=pwa34-close-sync1',
+  '/app.js?v=pwa34-close-sync1',
   '/manifest.webmanifest?v=pwa23',
   '/app-icon-192.png',
   '/app-icon-512.png',
@@ -10,8 +10,8 @@ const SHELL_ASSETS=[
 ];
 const SHELL_KEYS=new Set(SHELL_ASSETS);
 const SHELL_TYPES=new Map([
-  ['/style.css?v=pwa23','text/css'],
-  ['/app.js?v=pwa24-recovery1','text/javascript'],
+  ['/style.css?v=pwa34-close-sync1','text/css'],
+  ['/app.js?v=pwa34-close-sync1','text/javascript'],
   ['/manifest.webmanifest?v=pwa23','application/manifest+json'],
   ['/app-icon-192.png','image/png'],
   ['/app-icon-512.png','image/png'],

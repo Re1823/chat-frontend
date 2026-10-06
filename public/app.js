@@ -31,51 +31,90 @@ const persist = () => { localStorage.setItem('dwell.profiles',JSON.stringify(pro
 let toastTimer;
 function syncComposerHeight(){
   const footer=$('main>footer');
-  if(activeAppView==='memory'||!footer?.getBoundingClientRect)return;
+  if(activeAppView==='memory'||!footer?.getBoundingClientRect)return false;
   const height=Math.ceil(footer.getBoundingClientRect().height);
-  if(height)document.documentElement?.style?.setProperty('--composer-h',`${height}px`);
+  const root=document.documentElement;
+  const changed=height&&root?.style?.getPropertyValue('--composer-h')!==`${height}px`;
+  if(changed)root.style.setProperty('--composer-h',`${height}px`);
   positionToast();
-  if(keepBottomThroughViewportResize)scrollMessagesToBottom();
+  if(changed)recordKeyboardTrace('composer_height_commit_after');
+  if(changed&&keepBottomThroughViewportResize)scrollMessagesToBottom();
+  return !!changed;
 }
 function positionToast(){const notice=$('#toast'),footer=$('main>footer');if(!notice||!footer?.getBoundingClientRect)return;const layoutHeight=globalThis.innerHeight||document.documentElement?.clientHeight||800,visual=globalThis.visualViewport,visualTop=visual?.offsetTop||0,visualBottom=visual?visual.offsetTop+visual.height:layoutHeight,anchorTop=Math.min(footer.getBoundingClientRect().top,visualBottom),gap=16;notice.style.bottom=`${Math.max(gap,layoutHeight-anchorTop+gap)}px`;notice.style.maxHeight=`${Math.max(96,Math.min(320,anchorTop-visualTop-gap*1.5))}px`}
-let viewportFramePending=false,viewportRevision=0,keepBottomThroughViewportResize=false,activeAppView='chat';
-function syncVisualViewport(){const visual=globalThis.visualViewport,height=Math.round(visual?.height||globalThis.innerHeight||document.documentElement?.clientHeight||0),offsetTop=Math.round(visual?.offsetTop||0),bottom=offsetTop+height;if(height)document.documentElement?.style?.setProperty('--vv-height',`${height}px`);document.documentElement?.style?.setProperty('--vv-offset-top',`${offsetTop}px`);document.documentElement?.style?.setProperty('--vv-bottom',`${bottom}px`);positionToast()}
+let viewportFramePending=false,viewportRevision=0,keepBottomThroughViewportResize=false,activeAppView='chat',sendPointerActive=false,sendPointerTimer=0;
+const keyboardTraceKey='dwell.keyboard-geometry-trace.v1',keyboardTraceLimit=300;
+let keyboardTraceRows=[];try{const saved=JSON.parse(localStorage.getItem(keyboardTraceKey)||'[]');if(Array.isArray(saved))keyboardTraceRows=saved.slice(-keyboardTraceLimit)}catch{}
+let keyboardTraceFrameSeq=0,keyboardTraceFrameTime=-1,keyboardTracePersistQueued=false,keyboardTraceGeometryCommitGeneration=0,keyboardTraceScrollCorrectionGeneration=0;
+function keyboardTraceEnabled(){return isIOSViewport()&&(installedPwa()||localStorage.getItem('dwell.keyboard-trace-optin.v1')==='1')}
+function persistKeyboardTrace(){keyboardTracePersistQueued=false;try{localStorage.setItem(keyboardTraceKey,JSON.stringify(keyboardTraceRows))}catch{}}
+function queueKeyboardTracePersist(){if(keyboardTracePersistQueued)return;keyboardTracePersistQueued=true;if(globalThis.requestIdleCallback)globalThis.requestIdleCallback(persistKeyboardTrace);else setTimeout(persistKeyboardTrace,0)}
+function recordKeyboardTrace(eventType,{anchorRestore=false}={}){
+  if(!keyboardTraceEnabled())return;
+  const rect=element=>{const r=element?.getBoundingClientRect?.();return r?[r.top,r.bottom,r.height].map(value=>Math.round(value*100)/100):null};
+  const visual=globalThis.visualViewport,root=document.documentElement,box=$('#messages'),footer=$('main>footer'),input=$('#input');
+  keyboardTraceRows.push({t:Math.round(performance.now()*100)/100,eventType,generation:keyboardViewportRevision,frameSeq:keyboardTraceFrameSeq,visibility:document.visibilityState,inputFocused:document.activeElement===input,innerHeight:globalThis.innerHeight,visualHeight:visual?.height??null,visualOffsetTop:visual?.offsetTop??null,visualPageTop:visual?.pageTop??null,vvBottom:root?.style?.getPropertyValue('--vv-bottom')||'',appRect:rect($('.app')),mainRect:rect($('main')),messagesRect:rect(box),footerRect:rect(footer),composerRect:rect($('.composer')),scrollTop:box?.scrollTop??null,scrollHeight:box?.scrollHeight??null,clientHeight:box?.clientHeight??null,followingBottom:keepBottomThroughViewportResize,keyboardOpen:root?.classList?.contains('keyboard-open')||false,keyboardOpenCandidate:document.activeElement===input&&!!visual&&visual.height<(globalThis.screen?.height||globalThis.innerHeight||visual.height)*.82,geometryCommitGeneration:keyboardTraceGeometryCommitGeneration,scrollCorrectionGeneration:keyboardTraceScrollCorrectionGeneration,anchorRestore});
+  if(keyboardTraceRows.length>keyboardTraceLimit)keyboardTraceRows.splice(0,keyboardTraceRows.length-keyboardTraceLimit);
+  if(eventType==='settle_raf_complete'||eventType==='pagehide')queueKeyboardTracePersist();
+}
+function recordKeyboardTraceFrame(frameTime,eventType){if(!keyboardTraceEnabled())return;if(frameTime!==keyboardTraceFrameTime){keyboardTraceFrameTime=frameTime;keyboardTraceFrameSeq++}recordKeyboardTrace(eventType)}
+async function exportKeyboardTrace(){persistKeyboardTrace();const payload=JSON.stringify({version:1,timeOrigin:performance.timeOrigin,rows:keyboardTraceRows},null,2),file=new File([payload],`qiuqiu-keyboard-trace-${Date.now()}.json`,{type:'application/json'});if(navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file],title:'秋秋键盘诊断'});return}catch(error){if(error?.name==='AbortError')return}}const url=URL.createObjectURL(file),link=document.createElement('a');link.href=url;link.download=file.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+function syncVisualViewport(skipBeforeTrace=false){if(sendPointerActive){recordKeyboardTrace('geometry_commit_skipped_pointer');return}if(!skipBeforeTrace)recordKeyboardTrace('geometry_commit_before');const visual=globalThis.visualViewport,height=Math.round(visual?.height||globalThis.innerHeight||document.documentElement?.clientHeight||0),offsetTop=Math.round(visual?.offsetTop||0),bottom=offsetTop+height;if(height)document.documentElement?.style?.setProperty('--vv-height',`${height}px`);document.documentElement?.style?.setProperty('--vv-offset-top',`${offsetTop}px`);document.documentElement?.style?.setProperty('--vv-bottom',`${bottom}px`);const keyboardOpen=activeAppView==='chat'&&document.activeElement===$('#input')&&height<(globalThis.screen?.height||globalThis.innerHeight||height)*.82;document.documentElement?.classList?.toggle('keyboard-open',keyboardOpen);positionToast();keyboardTraceGeometryCommitGeneration=keyboardViewportRevision;recordKeyboardTrace('geometry_commit_after')}
 function setViewportBottomAnchor(enabled){keepBottomThroughViewportResize=!!enabled;$('#messages').classList.toggle('bottom-anchored',keepBottomThroughViewportResize)}
 function cancelViewportBottomAnchor(){setViewportBottomAnchor(false)}
-let keyboardViewportPending=false,keyboardViewportTimer,keyboardViewportRevision=0;
+let keyboardViewportPending=false,keyboardViewportTimer,keyboardViewportRevision=0,keyboardViewportTarget='',keyboardViewportCommittedTarget='',keyboardViewportBottomDirty=false;
 const isIOSViewport=()=>!!globalThis.visualViewport&&(/iPad|iPhone|iPod/.test(globalThis.navigator?.userAgent||'')||(globalThis.navigator?.platform==='MacIntel'&&globalThis.navigator?.maxTouchPoints>1));
 function scheduleSettledChatViewport(){
+  const vv=globalThis.visualViewport;
+  const geometry=()=>[vv.height,vv.offsetTop,vv.width,vv.scale].join(':');
+  const target=geometry();
+  if(keyboardViewportPending&&target===keyboardViewportTarget)return;
+  keyboardViewportTarget=target;
   const revision=++keyboardViewportRevision;
   keyboardViewportPending=true;
+  const root=document.documentElement;
+  const closingFromKeyboard=Number.parseFloat(root.style.getPropertyValue('--vv-offset-top'))>0&&Math.round(vv.offsetTop||0)===0&&Math.round(vv.height||0)>Number.parseFloat(root.style.getPropertyValue('--vv-height'));
+  // On CLOSE, geometry is authoritative already. Apply it before any trace
+  // snapshot forces layout of the old 480px messages region.
+  if(closingFromKeyboard){syncVisualViewport(true);keyboardViewportCommittedTarget=target}
   $('#messages').classList.add('is-keyboard-transitioning');
   clearTimeout(keyboardViewportTimer);
+  recordKeyboardTrace('viewport_generation_scheduled');
+  // WebKit moves the fixed shell before the delayed settle check. Commit its
+  // matching inner geometry in this event task, before a mixed frame can paint.
+  if(!closingFromKeyboard)syncVisualViewport();
+  syncComposerHeight();
+  keyboardViewportCommittedTarget=target;
+  if(activeAppView==='chat'&&keepBottomThroughViewportResize){
+    scrollMessagesToBottom($('#messages'),true);
+    keyboardViewportBottomDirty=false;
+  }
   const frame=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));
-  const geometry=()=>{const vv=globalThis.visualViewport;return [vv.height,vv.offsetTop,vv.width,vv.scale].join(':')};
   keyboardViewportTimer=setTimeout(()=>{
-    frame(()=>{
-      if(revision!==keyboardViewportRevision)return;
+    frame(frameTime=>{
+      recordKeyboardTraceFrame(frameTime,'settle_raf_read');
+      if(revision!==keyboardViewportRevision){recordKeyboardTrace('settle_generation_stale');return}
       const sample=geometry();
-      frame(()=>{
-        if(revision!==keyboardViewportRevision)return;
-        if(sample!==geometry()){scheduleSettledChatViewport();return}
-        syncVisualViewport();
-        frame(()=>{
-          if(revision!==keyboardViewportRevision)return;
-          const rect=$('main>footer').getBoundingClientRect();
-          frame(()=>{
-            if(revision!==keyboardViewportRevision)return;
-            const next=$('main>footer').getBoundingClientRect();
-            if(sample!==geometry()||Math.abs(rect.top-next.top)>1||Math.abs(rect.height-next.height)>1){scheduleSettledChatViewport();return}
-            keyboardViewportPending=false;
-            if(activeAppView==='chat'&&keepBottomThroughViewportResize)scrollMessagesToBottom();
-            $('#messages').classList.remove('is-keyboard-transitioning');
-          });
-        });
+      frame(frameTime=>{
+        recordKeyboardTraceFrame(frameTime,'settle_raf_validate');
+        if(revision!==keyboardViewportRevision){recordKeyboardTrace('settle_generation_stale');return}
+        if(sample!==geometry()){recordKeyboardTrace('settle_geometry_changed');scheduleSettledChatViewport();return}
+        // Commit the settled viewport, footer inset, and timeline position in
+        // one frame. A ResizeObserver callback can arrive after the viewport
+        // event, so its previously cached --composer-h is not authoritative.
+        const needsViewportCommit=keyboardViewportCommittedTarget!==sample;
+        if(needsViewportCommit){syncVisualViewport();keyboardViewportCommittedTarget=sample}
+        const composerChanged=syncComposerHeight();
+        keyboardViewportPending=false;
+        if(activeAppView==='chat'&&keepBottomThroughViewportResize&&(needsViewportCommit||composerChanged||keyboardViewportBottomDirty))scrollMessagesToBottom();
+        keyboardViewportBottomDirty=false;
+        $('#messages').classList.remove('is-keyboard-transitioning');
+        recordKeyboardTrace('settle_raf_complete');
       });
     });
   },80);
 }
-function scheduleVisualViewportSync(){const memoryActive=activeAppView==='memory';if(!memoryActive&&!keepBottomThroughViewportResize&&messagesNearBottom())setViewportBottomAnchor(true);if(!memoryActive&&isIOSViewport()){scheduleSettledChatViewport();return}const revision=++viewportRevision;if(viewportFramePending)return;viewportFramePending=true;const schedule=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));schedule(()=>{viewportFramePending=false;const committedRevision=viewportRevision;syncVisualViewport();schedule(()=>{if(committedRevision!==viewportRevision)return;if(memoryActive){const body=$('#memoryBody');if(body)body.scrollTop=Math.min(memoryState.scrollPosition,Math.max(0,body.scrollHeight-body.clientHeight))}else if(keepBottomThroughViewportResize)scrollMessagesToBottom()})})}
+function scheduleVisualViewportSync(){if(sendPointerActive)return;const memoryActive=activeAppView==='memory';if(!memoryActive&&isIOSViewport()){scheduleSettledChatViewport();return}const revision=++viewportRevision;if(viewportFramePending)return;viewportFramePending=true;const schedule=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));schedule(()=>{viewportFramePending=false;const committedRevision=viewportRevision;syncVisualViewport();schedule(()=>{if(committedRevision!==viewportRevision)return;if(memoryActive){const body=$('#memoryBody');if(body)body.scrollTop=Math.min(memoryState.scrollPosition,Math.max(0,body.scrollHeight-body.clientHeight))}else if(keepBottomThroughViewportResize)scrollMessagesToBottom()})})}
 const toast=t=>{const notice=$('#toast');notice.textContent=String(t);positionToast();notice.classList.add('on');clearTimeout(toastTimer);const duration=Math.min(8000,Math.max(2200,1400+notice.textContent.length*35));toastTimer=setTimeout(()=>notice.classList.remove('on'),duration)};
 function renderProviders(){ $('#providers').innerHTML=Object.entries(providerChoices).map(([id,p])=>`<button class="provider ${id===activeProvider?'on':''}" data-id="${id}" aria-pressed="${id===activeProvider}"><span>${p.icon}</span>${p.name}</button>`).join(''); $$('.provider').forEach(b=>b.onclick=()=>selectProvider(b.dataset.id)); }
 function selectProvider(id, saveCurrent=true){ if(saveCurrent)saveDraft(); activeProvider=id; const p=profile(id); const tmux=p.runtime==='claude_tmux'; $('#apiFields').hidden=tmux; $('#tmuxFields').hidden=!tmux; $('#base').value=p.base||''; $('#key').value=p.key||''; $('#model').value=p.model||''; $('#protocol').value=p.protocol||'responses'; $('#system').value=p.system||''; $('#runtimeId').value=p.runtimeId||'claude-main'; $('#testMsg').textContent=''; renderProviders(); if(tmux){const pending=refreshRuntimeStatus();if(coldResumeDiagnostic)coldResumeRuntimePromise=pending;return pending}updateStatus();return null }
@@ -246,7 +285,7 @@ const safeImageId=id=>/^img_[A-Za-z0-9_-]{43}$/.test(String(id||'')),safePhotoId
 function safeMessageImages(images){return Array.isArray(images)?images.filter(image=>safeImageId(image?.imageId)||safePhotoId(image?.photoId)).slice(0,4).map(image=>({...(safeImageId(image.imageId)?{imageId:image.imageId}:{photoId:image.photoId}),mime:['image/jpeg','image/png','image/webp'].includes(image.mime)?image.mime:'image/jpeg',width:Number(image.width)||0,height:Number(image.height)||0,byteSize:Number(image.byteSize)||0,note:String(image.note||image.caption||'').slice(0,1000),albumId:String(image.albumId||'').slice(0,80),albumName:String(image.albumName||'').slice(0,80),albumMood:String(image.albumMood||'').slice(0,24),savedAt:Number(image.savedAt)||0,capturedAt:Number(image.capturedAt)||0,sourceType:['chat','camera','upload'].includes(image.sourceType)?image.sourceType:'chat',sourceConversationId:String(image.sourceConversationId||'').slice(0,128),sourceTurnId:String(image.sourceTurnId||'').slice(0,128),sourceMessageId:String(image.sourceMessageId||'').slice(0,128),savedBy:['assistant','user'].includes(image.savedBy)?image.savedBy:'assistant',savedByDisplay:String(image.savedByDisplay||'').slice(0,80),tags:Array.isArray(image.tags)?image.tags.map(String).slice(0,24):[],reactions:Array.isArray(image.reactions)?image.reactions.map(String).slice(0,24):[]})):[]}
 function safeAlbumSaved(value){const photo=safeMessageImages([value?.photo||value])[0];return photo?.photoId?{type:'album_saved',photo}:null}
 function imageContentUrl(image,variant='content'){return image.photoId?`/api/photos/${image.photoId}/${variant}`:`/api/chat/images/${image.imageId}/${variant}`}
-function messageImagesMarkup(images){const safe=safeMessageImages(images);if(!safe.length)return '';return `<div class="message-images count-${safe.length}">${safe.map((image,index)=>`<img src="${imageContentUrl(image)}" data-view-image="${index}" ${image.photoId?`data-photo-id="${image.photoId}"`:`data-image-id="${image.imageId}"`} alt="图片 ${index+1}" loading="lazy" decoding="async">`).join('')}</div>`}
+function messageImagesMarkup(images){const safe=safeMessageImages(images);if(!safe.length)return '';return `<div class="message-images count-${safe.length}">${safe.map((image,index)=>`<img src="${imageContentUrl(image)}" data-view-image="${index}" ${image.photoId?`data-photo-id="${image.photoId}"`:`data-image-id="${image.imageId}"`} ${image.width>0&&image.height>0?`width="${image.width}" height="${image.height}" style="--photo-ratio:${image.width}/${image.height}"`:''} alt="图片 ${index+1}" loading="lazy" decoding="async">`).join('')}</div>`}
 function ordinaryBodyIsDuplicate(message){
   const normalize=text=>String(text||'').replace(/\r\n?/g,'\n').trim();
   const body=normalize(ordinaryAssistantPresentationText(message.content)),texts=(message.toolMessages||[]).map(item=>normalize(item.content));
@@ -261,18 +300,16 @@ function visibleMessageSearchText(message){
   if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(ordinaryAssistantPresentationText(message.content));
   return visible.join('\n');
 }
-function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.toolMessages?.length||message?.thoughtProcess?.items?.length)}
+function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.toolMessages?.length||!message?.pending&&message?.thoughtProcess?.items?.length)}
 function localDayKey(value){const date=value instanceof Date?value:new Date(value);return Number.isFinite(date.getTime())?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`:''}
 function visibleMessageTimestamp(message){const raw=message?.createdAt,date=typeof raw==='number'?new Date(raw):new Date(String(raw||''));return hasVisibleChatPresentation(message)&&Number.isFinite(date.getTime())?date.getTime():null}
 function dayDividerMarkup(value){const date=new Date(value),pad=n=>String(n).padStart(2,'0');return `<div class="chat-day-divider" data-day="${localDayKey(date)}"><span></span><time>${date.getMonth()+1}月${date.getDate()}日 · ${pad(date.getHours())}:${pad(date.getMinutes())}</time><span></span></div>`}
 function findChatSearchResults(messages,query){const needle=String(query||'').trim().normalize('NFC').toLocaleLowerCase();if(!needle)return[];return (messages||[]).flatMap((message,index)=>visibleMessageSearchText(message).normalize('NFC').toLocaleLowerCase().includes(needle)?[{index,text:visibleMessageSearchText(message)}]:[])}
 function renderChatMessage(message,previous,sourceIndex=-1){
   const albumEvents=(message.albumEvents||[]).map(safeAlbumSaved).filter(Boolean);
-  const ordinaryHidden=message.role==='assistant'&&(message.pending||message.bodyComplete===false);
-  if(message.role==='assistant'&&!message.content&&!message.images?.length&&!message.toolMessages?.length&&!message.thoughtProcess?.items?.length&&!message.delivery?.notice&&!albumEvents.length)return '';
-  if(ordinaryHidden&&!message.toolMessages?.length&&!message.thoughtProcess?.items?.length&&!message.delivery?.notice&&!albumEvents.length)return '';
+  if(message.role==='assistant'&&!ordinaryAssistantPresentationText(message.content).trim()&&!message.images?.length&&!message.toolMessages?.length&&!message.delivery?.notice&&!albumEvents.length&&(message.pending||!message.thoughtProcess?.items?.length))return '';
   let body='';
-  if(!message.toolMessages?.length){if(message.pending||message.content||message.images?.length||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(ordinaryHidden?{...message,content:''}:message,previous,null,sourceIndex)}
+  if(!message.toolMessages?.length){if(message.content||message.images?.length||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(message,previous,null,sourceIndex)}
   else{const visible=message.toolMessages.map((item,index)=>index?item:{...item,thoughtProcess:message.thoughtProcess,turnId:message.turnId});if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(message);body=visible.map((item,index)=>renderMessageRow(item,index?visible[index-1]:previous,index===visible.length-1?message:null,sourceIndex)).join('')}
   return body+albumEvents.map(event=>albumSavedMarkup(event,sourceIndex)).join('');
 }
@@ -285,14 +322,14 @@ function renderMessageRow(message,previous,connectionOwner=null,sourceIndex=-1){
   const thought=message.thoughtProcess?.items?.length&&!user,cloud=thought?`<button type="button" class="thought-cloud" data-thought-turn="${escapeHtml(message.turnId||'')}" aria-label="View thought process">${chatIcons.cloud}</button>`:'';
   const stamp=newGroup?`<div class="message-time ${user?'user':''}" aria-label="${user?'你':'秋秋'} · ${time}"><span class="time-dot"></span><span>${time}</span>${cloud}</div>`:'';
   const content=!user&&message.source!=='tool'?ordinaryAssistantPresentationText(message.content):message.content,images=safeMessageImages(message.images),imageMarkup=messageImagesMarkup(images);
-  if(!user&&thought&&!content&&!images.length&&!message.pending&&!message.delivery?.notice)return stamp;
-  const presented=content?(images.length?`<div class="message-text">${markup(content)}</div>`:markup(content)):message.delivery?.notice?'':images.length?'':'正在想…';
-  return stamp+`<article data-message-view="${messageViewKey(message)}" data-message-index="${sourceIndex}" class="message ${user?'user':''}"><div class="avatar${(user?userAvatarUrl:assistantAvatarUrl)?' has-image':''}" aria-hidden="true">${user?userMessageAvatarMarkup():assistantMessageAvatarMarkup()}</div><div class="bubble ${message.pending?'thinking':''} ${images.length?'has-images':''} ${images.length&&!content?'image-only':''}">${imageMarkup}${presented}${connectionMarkup(connectionOwner||message)}</div></article>`;
+  if(!user&&thought&&!content&&!images.length&&!message.delivery?.notice)return stamp;
+  const presented=content?(message.pending&&!user?escapeHtml(content):images.length?`<div class="message-text">${markup(content)}</div>`:markup(content)):'';
+  return stamp+`<article data-message-view="${messageViewKey(message)}" data-message-index="${sourceIndex}" class="message ${user?'user':''}"><div class="avatar${(user?userAvatarUrl:assistantAvatarUrl)?' has-image':''}" aria-hidden="true">${user?userMessageAvatarMarkup():assistantMessageAvatarMarkup()}</div><div class="bubble ${message.pending?'thinking':''} ${images.length?'has-images':''} ${images.length&&!content?'image-only':''}">${imageMarkup}${message.pending&&!user?`<span data-stream-text>${presented}</span>`:presented}${connectionMarkup(connectionOwner||message)}</div></article>`;
 }
 function bindAlbumSavedCards(){$$('[data-album-saved-photo]').forEach(button=>button.onclick=()=>openPhotoDetail({photoId:button.dataset.albumSavedPhoto},'chat').catch(error=>toast(error.message)))}
 function renderChatHistory(messages){let previousVisibleDay='',seenVisible=false;return messages.map((message,index)=>{let divider='';const timestamp=visibleMessageTimestamp(message),day=timestamp?localDayKey(timestamp):'';if(day){if(seenVisible&&previousVisibleDay&&day!==previousVisibleDay)divider=dayDividerMarkup(timestamp);previousVisibleDay=day;seenVisible=true}return divider+renderChatMessage(message,index?messages[index-1]:null,index)}).join('')}
 let lastChatRenderOutcome='not_rendered';
-function renderMessages(scrollToEnd=true){ const box=$('#messages'),s=current(); if(s?.bridge&&!s.messages.length){lastChatRenderOutcome='not_onboarding';box.innerHTML=`<div class="continuation-welcome"><span>续窗已接好</span><h2>${escapeHtml(s.title)}</h2><p>原会话仍完整保留。第一条消息发送时，启动包会作为背景交给当前模型。</p><button id="reviewBridge">查看或修改启动包</button></div>`; $('#reviewBridge').onclick=openContinuation; $('#chatTitle').textContent=s.title;return} if(!s||!s.messages.length){lastChatRenderOutcome=!s?'no_current_session':'current_session_empty';box.innerHTML='<div class="welcome"><div class="orb"><span></span></div><h2>有些话，不必急着说完。</h2><p>接上你常用的模型。对话会留在这台浏览器里，慢慢长成日子。</p><button id="welcomeSetup">接一条路进来 →</button></div>'; $('#welcomeSetup').onclick=openSettings; $('#chatTitle').textContent='今天，也在这里';return} lastChatRenderOutcome='not_onboarding';box.innerHTML=(s.bridge?'<div class="bridge-marker">◇ 已携带续窗启动包</div>':'')+renderChatHistory(s.messages); bindRecoveryActions();bindThoughtClouds();bindAlbumSavedCards();if(chatSearchState.active)applyChatSearchPresentation(); $('#chatTitle').textContent=s.title; if(scrollToEnd&&!chatSearchState.active){setViewportBottomAnchor(true);scrollMessagesToBottom(box)} }
+function renderMessages(scrollToEnd=true){ const snapshot=timelineScrollSnapshot(); try{ const box=$('#messages'),s=current(); if(s?.bridge&&!s.messages.length){lastChatRenderOutcome='not_onboarding';box.innerHTML=`<div class="continuation-welcome"><span>续窗已接好</span><h2>${escapeHtml(s.title)}</h2><p>原会话仍完整保留。第一条消息发送时，启动包会作为背景交给当前模型。</p><button id="reviewBridge">查看或修改启动包</button></div>`; $('#reviewBridge').onclick=openContinuation; $('#chatTitle').textContent=s.title;return} if(!s||!s.messages.length){lastChatRenderOutcome=!s?'no_current_session':'current_session_empty';box.innerHTML='<div class="welcome"><div class="orb"><span></span></div><h2>有些话，不必急着说完。</h2><p>接上你常用的模型。对话会留在这台浏览器里，慢慢长成日子。</p><button id="welcomeSetup">接一条路进来 →</button></div>'; $('#welcomeSetup').onclick=openSettings; $('#chatTitle').textContent='今天，也在这里';return} lastChatRenderOutcome='not_onboarding';box.innerHTML=(s.bridge?'<div class="bridge-marker">◇ 已携带续窗启动包</div>':'')+renderChatHistory(s.messages); bindRecoveryActions();bindThoughtClouds();bindAlbumSavedCards();if(chatSearchState.active)applyChatSearchPresentation(); $('#chatTitle').textContent=s.title; if(scrollToEnd&&!chatSearchState.active){setViewportBottomAnchor(true);scrollMessagesToBottom(box)} }finally{renderShoppingApprovalCards();if(!scrollToEnd)restoreTimelineScroll(snapshot)}}
 const chatSearchState={active:false,query:'',results:[],position:-1,scrollTop:0,selectedDay:'',calendarYear:0,calendarMonth:0};let chatSearchTimer=0;
 function clearSearchMarks(){for(const mark of $$('#messages mark.chat-search-mark'))mark.replaceWith?.(mark.textContent);for(const node of $$('#messages .search-current'))node.classList.remove('search-current')}
 function markText(root,query){if(!root||!query||!document.createTreeWalker||typeof NodeFilter==='undefined')return;const needle=query.normalize('NFC').toLocaleLowerCase(),walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const text=node.nodeValue||'',lower=text.normalize('NFC').toLocaleLowerCase();let cursor=0,hit=lower.indexOf(needle);if(hit<0)continue;const fragment=document.createDocumentFragment();while(hit>=0){fragment.append(text.slice(cursor,hit));const mark=document.createElement('mark');mark.className='chat-search-mark';mark.textContent=text.slice(hit,hit+query.length);fragment.append(mark);cursor=hit+query.length;hit=lower.indexOf(needle,cursor)}fragment.append(text.slice(cursor));node.replaceWith(fragment)}}
@@ -313,11 +350,72 @@ function locateChatDate(){const key=chatSearchState.selectedDay,messages=current
 let openThoughtTurn='',thoughtReturnFocus=null,thoughtDragStart=0,thoughtDragging=false;
 function thoughtOwner(turnId){return current()?.messages.find(message=>message.role==='assistant'&&message.turnId===turnId&&message.thoughtProcess?.items?.length)}
 function renderThoughtSheet(process){const list=$('#thoughtTimeline');if(!list)return;list.replaceChildren(...(process?.items||[]).map(item=>{const row=document.createElement('div');row.className=`thought-item ${item.type}`;const icon=document.createElement('span');icon.className='thought-item-icon';icon.setAttribute('aria-hidden','true');icon.textContent=item.type==='tool_call'?'✦':'◷';const body=document.createElement('div'),title=document.createElement(item.type==='tool_call'?'strong':'p');title.textContent=item.type==='tool_call'?(item.displayName||'工具'):(item.text||'');body.append(title);if(item.type==='tool_call'){const meta=document.createElement('small');meta.textContent=[item.toolName,item.inputSummary,item.status].filter(Boolean).join(' · ');body.append(meta)}row.append(icon,body);return row}))}
-function openThoughtProcess(turnId,button){const owner=thoughtOwner(turnId);if(!owner)return;openThoughtTurn=turnId;thoughtReturnFocus=button;renderThoughtSheet(owner.thoughtProcess);$('#thoughtBackdrop').hidden=false;$('#thoughtSheet').hidden=false;requestAnimationFrame(()=>{$('#thoughtBackdrop').classList.add('on');$('#thoughtSheet').classList.add('on');$('#thoughtSheet').focus({preventScroll:true})});document.body.classList.add('thought-open')}
-function closeThoughtProcess(){if(!openThoughtTurn)return;const sheet=$('#thoughtSheet'),backdrop=$('#thoughtBackdrop');sheet.classList.remove('dragging','on');backdrop.classList.remove('on');backdrop.style.removeProperty('--thought-backdrop-opacity');document.body.classList.remove('thought-open');const focus=thoughtReturnFocus;openThoughtTurn='';setTimeout(()=>{sheet.hidden=true;backdrop.hidden=true;sheet.style.removeProperty('--thought-drag');focus?.focus?.({preventScroll:true})},260)}
+function openThoughtProcess(turnId,button){const owner=thoughtOwner(turnId);if(!owner)return;preserveTimelineScroll(()=>{openThoughtTurn=turnId;thoughtReturnFocus=button;renderThoughtSheet(owner.thoughtProcess);$('#thoughtBackdrop').hidden=false;$('#thoughtSheet').hidden=false;document.body.classList.add('thought-open')});requestAnimationFrame(()=>{$('#thoughtBackdrop').classList.add('on');$('#thoughtSheet').classList.add('on');$('#thoughtSheet').focus({preventScroll:true})})}
+function closeThoughtProcess(){if(!openThoughtTurn)return;const sheet=$('#thoughtSheet'),backdrop=$('#thoughtBackdrop');preserveTimelineScroll(()=>{sheet.classList.remove('dragging','on');backdrop.classList.remove('on');backdrop.style.removeProperty('--thought-backdrop-opacity');document.body.classList.remove('thought-open')});const focus=thoughtReturnFocus;openThoughtTurn='';setTimeout(()=>preserveTimelineScroll(()=>{sheet.hidden=true;backdrop.hidden=true;sheet.style.removeProperty('--thought-drag');focus?.focus?.({preventScroll:true})}),260)}
 function bindThoughtClouds(){$$('.thought-cloud').forEach(button=>button.onclick=()=>openThoughtProcess(button.dataset.thoughtTurn,button))}
 function setupThoughtSheet(){const sheet=$('#thoughtSheet'),body=$('#thoughtBody'),backdrop=$('#thoughtBackdrop'),handle=$('#thoughtHandle');if(!sheet)return;backdrop.onclick=event=>{if(event.target===backdrop)closeThoughtProcess()};sheet.onclick=event=>event.stopPropagation();sheet.onkeydown=event=>{if(event.key==='Escape'){event.preventDefault();closeThoughtProcess()}};const start=event=>{thoughtDragStart=event.clientY;thoughtDragging=true;sheet.classList.add('dragging');handle.setPointerCapture?.(event.pointerId);event.preventDefault?.()};const move=event=>{if(!thoughtDragging)return;const dy=Math.max(0,event.clientY-thoughtDragStart);sheet.style.setProperty('--thought-drag',`${dy}px`);backdrop.style.setProperty('--thought-backdrop-opacity',String(Math.max(.28,1-dy/360)));event.preventDefault?.()};const end=event=>{if(!thoughtDragging)return;thoughtDragging=false;const dy=Math.max(0,event.clientY-thoughtDragStart);sheet.classList.remove('dragging');backdrop.style.removeProperty('--thought-backdrop-opacity');if(dy>90)closeThoughtProcess();else sheet.style.removeProperty('--thought-drag');handle.releasePointerCapture?.(event.pointerId)};handle.onpointerdown=start;handle.onpointermove=move;handle.onpointerup=end;handle.onpointercancel=end}
-function renderAll(scrollToEnd=true){renderSessions();renderMessages(scrollToEnd);updateStatus()}
+function renderAll(scrollToEnd=true){renderSessions();renderMessages(scrollToEnd);renderShoppingApprovalCards();updateStatus()}
+
+let shoppingApprovals=[];
+const expandedShoppingApprovals=new Set();
+const seenShoppingApprovalIds=new Set();
+const shoppingMoney=minor=>`¥${(Number(minor)/100).toFixed(2)}`;
+function shoppingApprovalMarkup(record){
+    const s=record.snapshot||{},pending=record.state==='pending_approval',canDecide=pending&&record.approvalNonce;
+    const terminal=['approved','rejected','expired'].includes(record.state);
+    if(pending)expandedShoppingApprovals.delete(record.purchaseId);
+    const expanded=terminal&&expandedShoppingApprovals.has(record.purchaseId);
+    const status={approved:'已确认购买 · 等待提交订单',executing:record.paymentStage==='order_submit_uncertain'?'订单提交结果待核实':'正在提交淘宝订单',pending_alipay:'已到支付宝确认阶段',reconciling:'正在核对支付结果',paid:'支付宝已确认支付',completed:'购买已完成',failed:'处理未完成，请核实',rejected:'已取消',expired:'审批已过期'}[record.state]||(canDecide?'请你确认':'等待重新取得审批凭据');
+    const summary=terminal?`<button type="button" class="shopping-approval-toggle" data-shopping-toggle aria-expanded="${expanded}" aria-label="${expanded?'收起':'展开'}订单详情"><span class="shopping-approval-summary">秋秋选好了 · <strong>${shoppingMoney(s.totalMinor)}</strong></span><span class="shopping-approval-state">${escapeHtml({approved:'已批准',rejected:'已取消',expired:'审批已过期'}[record.state])}</span><span class="shopping-approval-chevron" aria-hidden="true">⌄</span></button>`:'';
+    const details=`<div class="shopping-approval-details"><div class="shopping-approval-head"><small>秋秋选好了</small><span>${escapeHtml(status)}</span></div><h2>${escapeHtml(s.goods||'商品')}</h2><p class="shopping-merchant">${escapeHtml(s.merchant||'')}</p><dl><div><dt>规格</dt><dd>${escapeHtml(s.sku||'')}</dd></div><div><dt>数量</dt><dd>${escapeHtml(s.quantity||0)}</dd></div><div><dt>商品小计</dt><dd>${shoppingMoney(s.subtotalMinor)}</dd></div><div><dt>优惠</dt><dd>−${shoppingMoney(s.discountMinor)}</dd></div><div><dt>运费</dt><dd>${shoppingMoney(s.shippingMinor)}</dd></div><div><dt>收货地址</dt><dd>${escapeHtml(s.addressLabel||'')}</dd></div></dl><div class="shopping-approval-total"><span>最终应付</span><strong>${shoppingMoney(s.totalMinor)}</strong></div>${canDecide?`<p class="shopping-approval-note">确认后将提交这笔淘宝订单；付款仍需在支付宝完成。</p><div class="shopping-approval-actions"><button type="button" data-shopping-decision="reject">取消</button><button type="button" data-shopping-decision="approve">确认购买</button></div>`:''}</div>`;
+    return `<article class="shopping-approval-card${terminal?' shopping-approval-terminal':''}${expanded?' is-expanded':''}" data-shopping-purchase="${escapeHtml(record.purchaseId)}">${summary}${!terminal||expanded?details:''}</article>`;
+
+}
+function renderShoppingApprovalCards(){
+  const host=$('#messages');if(!host)return;
+  const visible=activeAppView==='chat'&&profile(activeProvider).runtime==='claude_tmux';
+  const runtimeId=profile(activeProvider).runtimeId||'claude-main';
+  const records=visible?[...new Map(shoppingApprovals.filter(r=>r.conversationId===runtimeId).map(r=>[r.purchaseId,r])).values()].sort((a,b)=>a.createdAt-b.createdAt||a.purchaseId.localeCompare(b.purchaseId)):[];
+  const ids=new Set(records.map(r=>r.purchaseId));
+  host.querySelectorAll('[data-shopping-purchase]').forEach(node=>{if(!ids.has(node.dataset.shoppingPurchase))node.remove()});
+  const snapshot=timelineScrollSnapshot(host);
+  let newPending=false;
+  for(const record of records){
+    const html=shoppingApprovalMarkup(record);
+    let node=host.querySelector('[data-shopping-purchase="'+CSS.escape(record.purchaseId)+'"]');
+    if(!node){
+      const template=document.createElement('template');template.innerHTML=html;node=template.content.firstElementChild;
+      node.dataset.approvalCreatedAt=String(record.createdAt);
+      const messages=current()?.messages||[];
+      const nextIndex=messages.findIndex(m=>Number(new Date(m.createdAt))>record.createdAt);
+      let anchor=nextIndex<0?null:host.querySelector('[data-message-index="'+nextIndex+'"]');
+      if(anchor?.previousElementSibling?.classList.contains('message-time'))anchor=anchor.previousElementSibling;
+      host.insertBefore(node,anchor);newPending ||= record.state==='pending_approval'&&!seenShoppingApprovalIds.has(record.purchaseId);
+    }else if(node._approvalMarkup!==html){
+      const template=document.createElement('template');template.innerHTML=html;
+      node.className=template.content.firstElementChild.className;node.innerHTML=template.content.firstElementChild.innerHTML;
+    }
+    seenShoppingApprovalIds.add(record.purchaseId);
+    node._approvalMarkup=html;
+  }
+  host.querySelectorAll('[data-shopping-toggle]').forEach(button=>button.onclick=()=>{const id=button.closest('[data-shopping-purchase]').dataset.shoppingPurchase;if(expandedShoppingApprovals.has(id))expandedShoppingApprovals.delete(id);else expandedShoppingApprovals.add(id);renderShoppingApprovalCards();host.querySelector('[data-shopping-purchase="'+CSS.escape(id)+'"] [data-shopping-toggle]')?.focus({preventScroll:true})});
+  host.querySelectorAll('[data-shopping-decision]').forEach(button=>button.onclick=()=>decideShoppingPurchase(button.closest('[data-shopping-purchase]').dataset.shoppingPurchase,button.dataset.shoppingDecision));
+  if(newPending&&snapshot?.follow){setViewportBottomAnchor(true);scheduleTimelineBottom()}else restoreTimelineScroll(snapshot,host);
+}
+
+async function loadShoppingApprovals(){
+  try{const response=await fetch('/api/shopping/approvals',{credentials:'same-origin',cache:'no-store'});if(response.redirected||[401,403].includes(response.status)){shoppingApprovals=[];renderShoppingApprovalCards();return}if(!response.ok)return;const data=await response.json();if(Array.isArray(data.purchases)){shoppingApprovals=data.purchases;renderShoppingApprovalCards()}}catch{}
+}
+async function decideShoppingPurchase(purchaseId,decision){
+  const record=shoppingApprovals.find(item=>item.purchaseId===purchaseId);
+  if(!record||record.state!=='pending_approval'||!record.approvalNonce)return;
+  const host=$('#messages');host.querySelectorAll(`[data-shopping-purchase="${purchaseId}"] button`).forEach(button=>button.disabled=true);
+  try{
+    const response=await fetch(`/api/shopping/approvals/${encodeURIComponent(purchaseId)}/decision`,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json','x-shopping-user-action':'1'},body:JSON.stringify({sessionId:record.sessionId,fingerprint:record.fingerprint,nonce:record.approvalNonce,decision})});
+    if(!response.ok)throw new Error('订单状态已变化，请刷新后查看');
+    await loadShoppingApprovals();
+  }catch(error){toast(error.message);await loadShoppingApprovals()}
+}
 
 let memoryItems=[],memorySearchResults=null,memorySearchTimer=0,memorySearchRequestSequence=0,memoryLoaded=false;
 const memoryState={activePrimaryFilter:'all',secondaryFilters:{status:'all',domain:'',tag:''},sortMode:'recent',searchQuery:'',scrollPosition:0,selectedBucketId:''};
@@ -347,7 +445,7 @@ async function restoreMainChatFromNavigation(){
   const selected=restoreStoredConversation();diagnostic.restoreSelected=Boolean(selected);diagnostic.selectedMessageCount=selected?.messages?.length??null;emitNotificationResumeDiagnostic('local_state');showChat();
   try{if(profile(activeProvider).runtime==='claude_tmux'){await refreshRuntimeStatus({diagnostic:true});restoreInterruptedConnection()}else await restoreAvailableProductionRuntime({diagnostic:true})}finally{if(diagnostic.recoveryReason==='not_reached')emitNotificationResumeDiagnostic('recovery');finishNotificationResumeDiagnostic()}
 }
-let photosAlbums=[],photosItems=[],activeAlbum=null,activePhotoDetail=null,photoDetailReturnView='photos',viewerItems=[],viewerIndex=0,viewerReturnScroll=0,viewerStartX=0,selectedMood='';
+let photosAlbums=[],photosItems=[],activeAlbum=null,activePhotoDetail=null,photoDetailReturnView='photos',photoDetailReturnSnapshot=null,viewerItems=[],viewerIndex=0,viewerReturnSnapshot=null,viewerStartX=0,selectedMood='';
 const photoDate=value=>value?new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(new Date(value)):'';
 const photoDetailDate=value=>{if(!value)return '未知';const date=new Date(Number(value));return Number.isFinite(date.getTime())?`${date.getFullYear()} · ${String(date.getMonth()+1).padStart(2,'0')} · ${String(date.getDate()).padStart(2,'0')}`:'未知'};
 function hidePhotos(){if($('#photosPage'))$('#photosPage').hidden=true;if($('#albumPage'))$('#albumPage').hidden=true;if($('#photoDetailPage'))$('#photoDetailPage').hidden=true;$('#photosNav')?.classList.remove('active')}
@@ -357,15 +455,15 @@ async function loadPhotos(){const [albumsData,photosData]=await Promise.all([pho
 function openAlbum(id){activeAppView='album';activeAlbum=id==='keeps'?{albumId:'keeps',name:'Keeps',mood:'',note:'',photos:photosItems.filter(photo=>!photo.albumId)}:{...photosAlbums.find(album=>album.albumId===id),photos:photosItems.filter(photo=>photo.albumId===id)};if(!activeAlbum)return;$('#photosPage').hidden=true;$('#photoDetailPage').hidden=true;$('#albumPage').hidden=false;$('#albumTitle').textContent=activeAlbum.name;$('#albumMeta').innerHTML=`<h1>${escapeHtml(activeAlbum.name)}</h1><p>${[activeAlbum.mood,activeAlbum.note,`${activeAlbum.photos.length} photos`].filter(Boolean).map(escapeHtml).join(' · ')}</p>`;$('#albumGrid').innerHTML=activeAlbum.photos.map((photo,index)=>`<button class="photo-tile" data-album-photo="${index}"><img src="${photo.thumbnailUrl}" alt="" loading="lazy"><small>Saved ${escapeHtml(photoDate(photo.savedAt))}</small>${photo.note?`<p>${escapeHtml(photo.note)}</p>`:''}</button>`).join('')||'<div class="album-empty">这本相册还是空的。</div>';$$('[data-album-photo]').forEach(button=>button.onclick=()=>openPhotoDetail(activeAlbum.photos[Number(button.dataset.albumPhoto)],'album').catch(error=>toast(error.message)))}
 function photoSourceLabel(photo){if(photo.sourceType==='camera')return 'Camera';if(photo.sourceType==='upload')return 'Upload';return photo.sourceTurnId?`聊天 #${photo.sourceTurnId.slice(0,6)}`:'聊天'}
 function renderPhotoDetail(photo){activePhotoDetail=photo;$('#photoDetailAlbum').textContent=photo.albumName||'全部相册';$('#photoDetailImage').src=imageContentUrl(photo);const chips=[photo.albumName?`★ ${photo.albumName} ›`:'',photo.albumMood?`● ${photo.albumMood}`:'',...(photo.tags||[]),...(photo.reactions||[])].filter(Boolean);$('#photoDetailChips').innerHTML=chips.map(item=>`<span>${escapeHtml(item)}</span>`).join('');const caption=$('#photoDetailCaption');caption.textContent=photo.note||'没有留下说明';caption.classList.toggle('empty',!photo.note);const source=photoSourceLabel(photo),collector=photo.savedByDisplay||(photo.savedBy==='user'?userProfile.name:assistantProfile.name),rows=[['存于',photoDetailDate(photo.savedAt)],['拍摄',photoDetailDate(photo.capturedAt)],['来源',source],['收藏者',collector],['相册',photo.albumName||'Keeps']];$('#photoDetailMeta').innerHTML=rows.map(([label,value],index)=>`<div><small>${escapeHtml(label)}</small>${index===2&&photo.sourceTurnId?`<button type="button" data-photo-source-turn="${escapeHtml(photo.sourceTurnId)}">${escapeHtml(value)}</button>`:`<span>${escapeHtml(value)}</span>`}</div>`).join('');const sourceButton=$('[data-photo-source-turn]');if(sourceButton)sourceButton.onclick=()=>jumpToPhotoSource(sourceButton.dataset.photoSourceTurn)}
-async function openPhotoDetail(photo,returnView='photos'){if(!safePhotoId(photo?.photoId))throw new Error('照片记录无效');photoDetailReturnView=returnView;const full=await photoJson(`/api/photos/${photo.photoId}`);activeAppView='photo-detail';hideProfilePages();$('#memoryPage').hidden=true;$('main>header.chat-floating').hidden=true;$('#messages').hidden=true;$('main>footer').hidden=true;$('main').classList.remove('memory-mode');$('main').classList.add('assistant-mode');$('#photosPage').hidden=true;$('#albumPage').hidden=true;$('#photoDetailPage').hidden=false;renderPhotoDetail(full)}
-function closePhotoDetail(){const target=photoDetailReturnView;if(target==='chat')return showChat();if(target==='album'&&activeAlbum){openAlbum(activeAlbum.albumId);return}showPhotos().catch(error=>toast(error.message))}
+async function openPhotoDetail(photo,returnView='photos'){if(!safePhotoId(photo?.photoId))throw new Error('照片记录无效');photoDetailReturnView=returnView;photoDetailReturnSnapshot=returnView==='chat'?timelineScrollSnapshot():null;const full=await photoJson(`/api/photos/${photo.photoId}`);activeAppView='photo-detail';hideProfilePages();$('#memoryPage').hidden=true;$('main>header.chat-floating').hidden=true;$('#messages').hidden=true;$('main>footer').hidden=true;$('main').classList.remove('memory-mode');$('main').classList.add('assistant-mode');$('#photosPage').hidden=true;$('#albumPage').hidden=true;$('#photoDetailPage').hidden=false;renderPhotoDetail(full)}
+function closePhotoDetail(){const target=photoDetailReturnView;if(target==='chat'){showChat();restoreTimelineScroll(photoDetailReturnSnapshot);photoDetailReturnSnapshot=null;return}if(target==='album'&&activeAlbum){openAlbum(activeAlbum.albumId);return}showPhotos().catch(error=>toast(error.message))}
 function jumpToPhotoSource(turnId){const session=current(),message=session?.messages.find(item=>item.turnId===turnId);showChat();if(!message)return toast('原消息不在当前浏览器会话中');requestAnimationFrame(()=>{$(`[data-message-view="${messageViewKey(message)}"]`)?.scrollIntoView?.({block:'center'});})}
 function openAlbumSheet(){selectedMood='';$('#albumName').value='';$('#albumNote').value='';$$('#albumMoods button').forEach(button=>button.classList.remove('on'));$('#shade').classList.add('on');$('#albumSheet').classList.add('on')}
 async function createAlbumFromSheet(){const name=$('#albumName').value.trim();if(!name)return toast('先给相册起个名字');await photoJson('/api/photos/albums',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name,mood:selectedMood||null,note:$('#albumNote').value.trim()||null})});closeSheets();await loadPhotos();toast('相册建好了')}
 function viewerMeta(image){return [image.note,image.albumName,image.savedAt?`Saved ${photoDate(image.savedAt)}`:''].filter(Boolean).map(escapeHtml).join(' · ')}
 function renderViewer(){const image=viewerItems[viewerIndex];if(!image)return closeViewer();$('#viewerCount').textContent=`${viewerIndex+1}/${viewerItems.length}`;$('#viewerImage').src=imageContentUrl(image);$('#viewerMeta').innerHTML=viewerMeta(image);$('#saveViewerPhoto').hidden=!!image.photoId;$('#sendViewerPhoto').hidden=!image.photoId}
-function openViewer(items,index=0){viewerItems=safeMessageImages(items.length<=4?items:items.map(item=>({...item,photoId:item.photoId})));if(items.length>4&&items.every(item=>safePhotoId(item.photoId)))viewerItems=items.map(item=>({...item}));viewerIndex=Math.max(0,Math.min(index,viewerItems.length-1));viewerReturnScroll=$('#messages')?.scrollTop||0;$('#imageViewer').hidden=false;renderViewer()}
-function closeViewer(){$('#imageViewer').hidden=true;$('#viewerImage').removeAttribute('src');if(activeAppView==='chat'&&$('#messages'))$('#messages').scrollTop=viewerReturnScroll}
+function openViewer(items,index=0){viewerItems=safeMessageImages(items.length<=4?items:items.map(item=>({...item,photoId:item.photoId})));if(items.length>4&&items.every(item=>safePhotoId(item.photoId)))viewerItems=items.map(item=>({...item}));viewerIndex=Math.max(0,Math.min(index,viewerItems.length-1));viewerReturnSnapshot=timelineScrollSnapshot();$('#imageViewer').hidden=false;renderViewer()}
+function closeViewer(){preserveTimelineScroll(()=>{$('#imageViewer').hidden=true;$('#viewerImage').removeAttribute('src')});if(activeAppView==='chat')restoreTimelineScroll(viewerReturnSnapshot);viewerReturnSnapshot=null}
 async function saveViewerToPhotos(){const image=viewerItems[viewerIndex];if(!image?.imageId)return;const saved=await photoJson('/api/photos/promote',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({imageId:image.imageId})});Object.assign(image,saved);toast('Saved to Photos');renderViewer()}
 async function sendViewerToChat(){const image=viewerItems[viewerIndex];if(!image?.photoId)return;if(draftImages.length>=4)return toast('每次最多发送 4 张图片');const data=await photoJson(`/api/photos/${image.photoId}/attach`,{method:'POST'});draftImages.push(...safeMessageImages([data]));closeViewer();showChat();renderAttachmentDraft();updateStatus();toast('Added to Chat')}
 async function refreshAddToChatRecents(){const strip=$('#recentPhotoStrip');if(!strip)return;try{const data=await photoJson('/api/photos?limit=8&offset=0'),photos=(data.photos||[]).filter(photo=>safePhotoId(photo.photoId));strip.innerHTML=photos.length?photos.map(photo=>`<button type="button" data-recent-photo="${escapeHtml(photo.photoId)}" aria-label="Add saved photo"><img src="${escapeHtml(photo.thumbnailUrl)}" alt="" loading="lazy"></button>`).join(''):'<span>最近收藏的照片会显示在这里</span>';$$('[data-recent-photo]').forEach(button=>button.onclick=()=>addSavedPhotoToDraft(button.dataset.recentPhoto))}catch{strip.innerHTML='<span>暂时无法读取最近照片</span>'}}
@@ -392,29 +490,58 @@ function applyTurnEvent(out,event){
 function renderAttachmentDraft(){const box=$('#attachmentDraft');box.hidden=!draftImages.length&&!pendingImageUploads;const images=draftImages.map((image,index)=>`<div><img src="/api/chat/images/${image.imageId}/thumbnail" alt="待发送图片 ${index+1}"><button type="button" data-remove-image="${image.imageId}" aria-label="移除图片">×</button></div>`).join('');const loading=Array.from({length:pendingImageUploads},()=>'<div class="attachment-loading" aria-label="图片上传中"></div>').join('');box.innerHTML=images+loading;$$('[data-remove-image]').forEach(button=>button.onclick=()=>{draftImages=draftImages.filter(image=>image.imageId!==button.dataset.removeImage);renderAttachmentDraft();updateStatus();syncComposerHeight()});syncComposerHeight()}
 let imageProcessingModule;
 async function uploadImages(event){const files=[...(event.target.files||[])],sourceType=event.target.id==='cameraInput'?'camera':'upload';event.target.value='';if(!files.length)return;if(files.length+draftImages.length+pendingImageUploads>4)return toast('每次最多发送 4 张图片');if(profile(activeProvider).runtime!=='claude_tmux')return toast('图片暂时只支持 Claude Code 会话');pendingImageUploads+=files.length;$('#attachImage').disabled=true;renderAttachmentDraft();updateStatus();imageProcessingModule??=import('/image-processing.mjs?v=photos1');let processor;try{processor=await imageProcessingModule}catch{processor=null}const results=await Promise.allSettled(files.map(async file=>{if(!processor)throw new Error('图片压缩模块加载失败，请刷新后重试');const [compressed,capturedAt]=await Promise.all([processor.compressImageForUpload(file,{count:files.length,maxBytes:processor.imageBudgetForBatch(files.length)}),processor.extractJpegCapturedAt(file)]),form=new FormData();form.append('images',compressed,compressed.name||'photo.jpg');const headers={'x-image-source':sourceType};if(capturedAt)headers['x-image-captured-at']=String(capturedAt);const response=await fetch('/api/chat/images',{method:'POST',headers,body:form}),data=await response.json();if(!response.ok)throw new Error(data.error==='unsupported_image_type'?'这张图片无法转换为 JPEG':data.error==='image_too_large'?'图片压缩后仍然太大，请换一张重试':data.error||'图片上传失败');const image=safeMessageImages(data.images)[0];if(!image)throw new Error('图片上传失败');return image}));draftImages.push(...results.filter(result=>result.status==='fulfilled').map(result=>result.value));for(const result of results)if(result.status==='rejected')toast(result.reason?.message||'图片上传失败');pendingImageUploads=Math.max(0,pendingImageUploads-files.length);$('#attachImage').disabled=pendingImageUploads>0;renderAttachmentDraft();updateStatus()}
-function messagesNearBottom(box=$('#messages')){return box.scrollHeight-box.scrollTop-box.clientHeight<96}
-function scrollMessagesToBottom(box=$('#messages')){if(keyboardViewportPending)return;box.scrollTop=Math.max(0,box.scrollHeight-box.clientHeight)}
+function messagesNearBottom(box=$('#messages')){return !!box&&box.scrollHeight-box.scrollTop-box.clientHeight<96}
+function scrollMessagesToBottom(box=$('#messages'),allowPending=false){if(!box)return;const target=Math.max(0,box.scrollHeight-box.clientHeight);if(keyboardViewportPending&&!allowPending){if(Math.abs(box.scrollTop-target)>1)keyboardViewportBottomDirty=true;return}if(Math.abs(box.scrollTop-target)<=1)return;recordKeyboardTrace('scroll_correction_before');box.scrollTop=target;keyboardTraceScrollCorrectionGeneration=keyboardViewportRevision;recordKeyboardTrace('scroll_correction_after')}
+// One owner for timeline geometry. Capture the visible row before a structural
+// update; follow the end only when the reader was already following it.
+let timelineScrollFrame=0;
+let timelineUserScrollIntent=false,timelineUserScrollTimer=0;
+function noteTimelineUserScroll(){timelineUserScrollIntent=true;clearTimeout(timelineUserScrollTimer);timelineUserScrollTimer=setTimeout(()=>{timelineUserScrollIntent=false},250)}
+function timelineScrollSnapshot(box=$('#messages')){
+  if(!box)return null;
+  const follow=keepBottomThroughViewportResize;
+  const rect=box.getBoundingClientRect();
+  const anchor=[...box.querySelectorAll('[data-message-view],[data-shopping-purchase],[data-message-index]')].find(node=>node.getBoundingClientRect().bottom>rect.top+1);
+  return {follow,top:box.scrollTop,anchor:anchor?.getAttribute('data-message-view')?['data-message-view',anchor.getAttribute('data-message-view')]:anchor?.getAttribute('data-shopping-purchase')?['data-shopping-purchase',anchor.getAttribute('data-shopping-purchase')]:null,offset:anchor?.getBoundingClientRect().top-rect.top};
+}
+function restoreTimelineScroll(snapshot,box=$('#messages')){
+  if(!snapshot||!box)return;
+  recordKeyboardTrace('anchor_restore_before',{anchorRestore:true});
+  if(snapshot.follow){setViewportBottomAnchor(true);scrollMessagesToBottom(box);recordKeyboardTrace('anchor_restore_after',{anchorRestore:true});return}
+  const [name,value]=snapshot.anchor||[];
+  const node=name?[...box.querySelectorAll(`[${name}]`)].find(item=>item.getAttribute(name)===value):null;
+  box.scrollTop=node?box.scrollTop+node.getBoundingClientRect().top-box.getBoundingClientRect().top-snapshot.offset:snapshot.top;
+  recordKeyboardTrace('anchor_restore_after',{anchorRestore:true});
+}
+function preserveTimelineScroll(change){const snapshot=timelineScrollSnapshot();const result=change();restoreTimelineScroll(snapshot);return result}
+function scheduleTimelineBottom(){if(timelineScrollFrame)return;const frame=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));timelineScrollFrame=frame(()=>{timelineScrollFrame=0;if(activeAppView==='chat'&&keepBottomThroughViewportResize)scrollMessagesToBottom()})}
 function createStreamingView(out,initialFollow=keepBottomThroughViewportResize||messagesNearBottom()){
   const box=$('#messages'),key=messageViewKey(out);
-  // Only the message state survives a view rebuild; never retain its bubble.
-  const currentBubble=()=>$('#messages')?.querySelector?.('[data-message-view="'+key+'"] .bubble');
-  let framePending=false,frameHandle=0,dirty=false,follow=initialFollow;
+  const currentText=()=>$('#messages')?.querySelector?.('[data-message-view="'+key+'"] [data-stream-text]');
+  let framePending=false,frameHandle=0,dirty=false,structuralDirty=false,follow=initialFollow;
   const scheduleFrame=globalThis.requestAnimationFrame?.bind(globalThis)||(fn=>setTimeout(fn,16)),cancelFrame=globalThis.cancelAnimationFrame?.bind(globalThis)||clearTimeout;
-  const onScroll=()=>{if(!keepBottomThroughViewportResize)follow=messagesNearBottom(box)};
+  const onScroll=()=>{if(messagesNearBottom(box)&&keepBottomThroughViewportResize)follow=true};
   const flush=()=>{
     framePending=false;frameHandle=0;if(!dirty)return;dirty=false;
-    if(out.toolMessages?.length||out.thoughtProcess?.items?.length||out.albumEvents?.length){if(current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scrollMessagesToBottom($('#messages'));}return;}
-    // Ordinary assistant text is buffered until the message is complete.
-    // Tool messages, albums and Thought Process retain their typed-event UI.
+    if(!out.toolMessages?.length&&!currentText()&&ordinaryAssistantPresentationText(out.content).trim())structuralDirty=true;
+    if(structuralDirty){structuralDirty=false;if(current()?.messages.includes(out))renderMessages(false)}
+    if(!out.toolMessages?.length){const text=currentText();if(text)text.textContent=ordinaryAssistantPresentationText(out.content)}
+    if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom();
   };
   box.classList.add('streaming');box.addEventListener?.('scroll',onScroll,{passive:true});
   return {
-    update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
-    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal){dirty=true;flush();const bubble=currentBubble(),content=ordinaryAssistantPresentationText(out.content);if(bubble&&content)bubble.innerHTML=markup(content);if(current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleFrame(()=>{if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scrollMessagesToBottom($('#messages'))})}}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
+    update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(['assistant_message','thought_process','album_saved'].includes(event.type))structuralDirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
+    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal&&current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom()}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
     isFollowing:()=>follow
   };
 }
-async function readTurnStream(response,out,onEvent=()=>{},applyEvent=event=>{applyTurnEvent(out,event);return true}){const reader=response.body.getReader(),dec=new TextDecoder();let buf='';const ndjson=(response.headers.get('content-type')||'').includes('application/x-ndjson');let terminalSeen=false;const consume=event=>{if(['turn_done','turn_stopped','turn_error'].includes(event.type))terminalSeen=true;const applied=applyEvent(event);if(applied!==false)onEvent(event);return applied};while(true){const {done,value}=await reader.read();buf+=dec.decode(value||new Uint8Array(),{stream:!done});const parts=ndjson?buf.split('\n'):buf.split('\n\n');buf=parts.pop()||'';for(const part of parts){const raw=ndjson?part.trim():(part.split('\n').find(x=>x.startsWith('data:'))||'').slice(5).trim();if(!raw)continue;try{const event=JSON.parse(raw);consume(event);if(['turn_done','turn_stopped'].includes(event.type)){try{await reader.cancel?.()}catch{}return}}catch(e){if(e instanceof SyntaxError)continue;throw e}}if(done)break}if(buf.trim()){try{consume(JSON.parse(ndjson?buf.trim():buf.replace(/^data:\s*/,'')))}catch(e){if(!(e instanceof SyntaxError))throw e}}if(ndjson&&!terminalSeen)throw new Error('connection_interrupted')}
+async function readTurnStream(response,out,onEvent=()=>{},applyEvent=event=>{applyTurnEvent(out,event);return true},onStream=()=>{}){
+  const reader=response.body.getReader(),dec=new TextDecoder();onStream('stream_reader_created');
+  let buf='',firstData=false;const ndjson=(response.headers.get('content-type')||'').includes('application/x-ndjson');let terminalSeen=false;
+  const consume=event=>{if(['turn_done','turn_stopped','turn_error'].includes(event.type))terminalSeen=true;const applied=applyEvent(event);if(applied!==false)onEvent(event);return applied};
+  while(true){const {done,value}=await reader.read();if(!firstData&&value?.byteLength){firstData=true;onStream('stream_first_data')}buf+=dec.decode(value||new Uint8Array(),{stream:!done});const parts=ndjson?buf.split('\n'):buf.split('\n\n');buf=parts.pop()||'';for(const part of parts){const raw=ndjson?part.trim():(part.split('\n').find(x=>x.startsWith('data:'))||'').slice(5).trim();if(!raw)continue;try{const event=JSON.parse(raw);consume(event);if(['turn_done','turn_stopped'].includes(event.type)){try{await reader.cancel?.()}catch{}return}}catch(e){if(e instanceof SyntaxError)continue;throw e}}if(done)break}
+  if(buf.trim()){try{consume(JSON.parse(ndjson?buf.trim():buf.replace(/^data:\s*/,'')))}catch(e){if(!(e instanceof SyntaxError))throw e}}if(ndjson&&!terminalSeen)throw new Error('connection_interrupted')
+}
 function connectionMarkup(message){
   const d=message.delivery;if(!d?.notice)return '';
   const action=d.retryAllowed?'retry':d.phase==='connection_lost'&&d.turnId?'status':'';
@@ -429,8 +556,35 @@ function bindRecoveryActions(){
   });
 }
 function connectionLog(event,request,details={}){console.info?.('[dwell connection]',{event,clientRequestId:request.clientRequestId,turnId:request.turnId||null,...details})}
-function saveDelivery(request,notice='',retryAllowed=false){
-  request.out.delivery={clientRequestId:request.clientRequestId,turnId:request.turnId||null,phase:request.phase,runtimeId:request.runtimeId,lastAppliedSeq:request.lastAppliedSeq||0,notice,retryAllowed};persist();
+const chatSendDiagnosticKey='dwell.chat-send-diagnostics.v1',chatSendDiagnosticLimit=10,chatSendEventLimit=16;
+function safeChatSendError(error){
+  const rawName=String(error?.name||'Error'),name=['Error','TypeError','AbortError','NetworkError','SyntaxError','DOMException','TimeoutError'].includes(rawName)?rawName:'OtherError';
+  const message=String(error?.message||'');
+  const safe=/^(?:Failed to fetch|Load failed|Network request failed|NetworkError when attempting to fetch resource\.?|The network connection was lost\.?|The operation was aborted\.?|The user aborted a request\.?|connection_interrupted)$/i.test(message);
+  return {exceptionName:name,exceptionMessage:safe?message.slice(0,160):'[redacted]'};
+}
+function recordChatSendDiagnostic(event,request,{status,error,hadTurn}={}){
+  const entry={event,timestamp:new Date().toISOString(),online:typeof globalThis.navigator?.onLine==='boolean'?globalThis.navigator.onLine:null};
+  if(request.clientRequestId)entry.clientRequestId=String(request.clientRequestId).slice(0,128);
+  if(request.turnId)entry.turnId=String(request.turnId).slice(0,128);
+  if(Number.isInteger(status))entry.status=status;
+  if(typeof hadTurn==='boolean')entry.hadTurn=hadTurn;
+  if(error)Object.assign(entry,safeChatSendError(error));
+  connectionLog(event,request,entry);
+  try{
+    const storage=globalThis.sessionStorage;if(!storage)return;
+    const previous=JSON.parse(storage.getItem(chatSendDiagnosticKey)||'[]'),records=Array.isArray(previous)?previous:[];
+    let record=records.find(item=>item?.clientRequestId===entry.clientRequestId);
+    if(!record){record={clientRequestId:entry.clientRequestId,events:[]};records.push(record)}
+    if(!Array.isArray(record.events))record.events=[];
+    record.events.push(entry);record.events=record.events.slice(-chatSendEventLimit);
+    storage.setItem(chatSendDiagnosticKey,JSON.stringify(records.slice(-chatSendDiagnosticLimit)));
+  }catch{}
+}
+let chatPersistTimer=0;
+function scheduleChatPersist(){if(chatPersistTimer)return;chatPersistTimer=setTimeout(()=>{chatPersistTimer=0;persist()},200)}
+function saveDelivery(request,notice='',retryAllowed=false,deferPersist=false){
+  request.out.delivery={clientRequestId:request.clientRequestId,turnId:request.turnId||null,phase:request.phase,runtimeId:request.runtimeId,lastAppliedSeq:request.lastAppliedSeq||0,notice,retryAllowed};if(deferPersist)scheduleChatPersist();else persist();
 }
 function showConnectionNotice(request,notice,retryAllowed=false){
   saveDelivery(request,notice,retryAllowed);
@@ -443,7 +597,7 @@ function applyRequestEvent(request,event){
     if(event.seq!==last+1)throw new Error('turn_sequence_gap');
   }
   applyTurnEvent(request.out,event);
-  if(Number.isSafeInteger(event.seq)){request.lastAppliedSeq=event.seq;saveDelivery(request,request.out.delivery?.notice||'',request.out.delivery?.retryAllowed||false)}
+  if(Number.isSafeInteger(event.seq)){request.lastAppliedSeq=event.seq;saveDelivery(request,request.out.delivery?.notice||'',request.out.delivery?.retryAllowed||false,event.type==='segment_delta'||!event.type&&!!event.delta)}
   return true;
 }
 function requestIsActive(request){return !!request&&activeRequests.get(request.clientRequestId)===request}
@@ -507,7 +661,7 @@ async function handleConnectionLoss(request,error){
   if(request.stopped||request.finished)return;
   const hadTurn=!!request.turnId;request.phase='connection_lost';
   request.view?.finish(false);request.view=null;
-  connectionLog('connection_lost',request,{hadTurn});
+  recordChatSendDiagnostic('connection_lost',request,{hadTurn,error,status:request.lastHttpStatus});
   if(error.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。');return}
   if(!hadTurn){
     await recoverByClientRequestId(request);return;
@@ -527,19 +681,28 @@ function finishGenerating(request,stopped=false){
   activeRequests.delete(request.clientRequestId);activeRequest=latestActiveRequest();sending=activeRequests.size>0;activeTurnId=[...activeRequests.values()].find(value=>value.turnId)?.turnId||'';
   persist();renderSessions();updateStatus();
 }
-async function send(){ const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];renderAttachmentDraft();autoSize(); persist();renderAll(followStream); const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);
+async function send(){ const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=keepBottomThroughViewportResize||messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];renderAttachmentDraft();autoSize(); persist();renderAll(followStream); const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);recordChatSendDiagnostic('send_attempt',request);
   const p=profile(activeProvider); const apiMessages=[]; if(p.system)apiMessages.push({role:'system',content:p.system}); if(s.bridge)apiMessages.push({role:'system',content:`以下是从上一段会话提炼、由用户确认的续窗启动包。把它作为背景，不要声称看过未包含的旧会话。\n\n${s.bridge}`}); apiMessages.push(...s.messages.filter(m=>!m.pending).map(({role,content})=>({role,content})));
   const requestMessages=p.runtime==='claude_tmux'?[{role:'user',content:text}]:apiMessages;
-  const out=request.out,streamView=createStreamingView(out,followStream);request.view=streamView;saveDelivery(request);connectionLog('fetch_opened',request);try{ const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body:JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)}),signal:request.controller.signal}); if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))} connectionLog('stream_opened',request); await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event));
-  }catch(e){out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);renderAttachmentDraft()}await handleConnectionLoss(request,e)}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
+  const out=request.out,streamView=createStreamingView(out,followStream);request.view=streamView;saveDelivery(request);connectionLog('fetch_opened',request);
+  let fetchInFlight=false;
+  try{
+    const body=JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)});
+    recordChatSendDiagnostic('fetch_call',request);fetchInFlight=true;
+    const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body,signal:request.controller.signal});
+    fetchInFlight=false;request.lastHttpStatus=r.status;recordChatSendDiagnostic('fetch_resolved',request,{status:r.status});
+    if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))}
+    connectionLog('stream_opened',request);
+    await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event),event=>recordChatSendDiagnostic(event,request,{status:r.status}));
+  }catch(e){if(fetchInFlight)recordChatSendDiagnostic('fetch_rejected',request,{error:e});out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);renderAttachmentDraft()}await handleConnectionLoss(request,e)}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
 async function triggerSend(){try{await send()}catch(e){toast('网络刚刚断了一下，请稍后再试。')}}
-function preserveComposerFocusOnSend(event){if(document.activeElement===$('#input'))event.preventDefault()}
+function preserveComposerFocusOnSend(event){sendPointerActive=true;clearTimeout(sendPointerTimer);sendPointerTimer=setTimeout(()=>{sendPointerActive=false;scheduleVisualViewportSync()},450);if(document.activeElement===$('#input'))event.preventDefault()}
 function autoSize(){const t=$('#input');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';updateStatus();if($('#toast').classList.contains?.('on'))positionToast()}
-$('#settingsBtn').onclick=openUserHub; $('#welcomeSetup').onclick=openSettings; $('#modelBtn').onclick=()=>{if(profile(activeProvider).runtime!=='claude_tmux')openSettings()}; $('#closeSettings').onclick=closeConnections; $('#closeContinue').onclick=closeSheets;$('#shade').onclick=()=>$('#addToChatSheet').classList.contains('on')?closeAddToChat():closeSheets(); $('#menuBtn').onclick=()=>{$('aside').classList.toggle('on')}; $('#asideClose').onclick=()=>{$('aside').classList.remove('on')}; $('#send').onpointerdown=preserveComposerFocusOnSend; $('#send').onclick=triggerSend; $('#startContinue').onclick=startContinuation; $('#backupContinue').onclick=backupContinuation; $('#continueDraft').oninput=()=>updateContinueStats(buildContinuation(sessions.find(s=>s.id===continuationSourceId)||{messages:[],title:''}).kept,(sessions.find(s=>s.id===continuationSourceId)?.messages||[]).length);
+$('#settingsBtn').onclick=openUserHub; $('#welcomeSetup').onclick=openSettings; $('#modelBtn').onclick=()=>{if(profile(activeProvider).runtime!=='claude_tmux')openSettings()}; $('#closeSettings').onclick=closeConnections; $('#closeContinue').onclick=closeSheets;$('#shade').onclick=()=>$('#addToChatSheet').classList.contains('on')?closeAddToChat():closeSheets(); $('#menuBtn').onclick=()=>{$('aside').classList.toggle('on')}; $('#asideClose').onclick=()=>{$('aside').classList.remove('on')}; $('#send').onpointerdown=preserveComposerFocusOnSend; $('#send').onclick=()=>{sendPointerActive=false;clearTimeout(sendPointerTimer);void triggerSend();scheduleVisualViewportSync()}; $('#startContinue').onclick=startContinuation; $('#backupContinue').onclick=backupContinuation; $('#continueDraft').oninput=()=>updateContinueStats(buildContinuation(sessions.find(s=>s.id===continuationSourceId)||{messages:[],title:''}).kept,(sessions.find(s=>s.id===continuationSourceId)?.messages||[]).length);
 $('#notificationsButton').onclick=toggleNotifications;
 $('#attachImage').onclick=openAddToChat;$('#attachmentInput').onchange=uploadImages;$('#fileInput').onchange=uploadImages;$('#cameraInput').onchange=uploadImages;
 $('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=null; $('#emojiButton').onclick=()=>{}; $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
-$('#input').onfocus=()=>{if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',cancelViewportBottomAnchor,{passive:true});$('#messages').addEventListener?.('wheel',event=>{if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});
+$('#input').onfocus=()=>{if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',()=>{noteTimelineUserScroll();cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('wheel',event=>{noteTimelineUserScroll();if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('scroll',()=>{if(timelineUserScrollIntent&&messagesNearBottom())setViewportBottomAnchor(true)},{passive:true});$('#messages').addEventListener?.('load',event=>{if(event.target?.tagName==='IMG'&&keepBottomThroughViewportResize)scheduleTimelineBottom()},true);
 $('#chatNav').onclick=showChat;$('#memoryNav').onclick=showMemory;$('#memoryMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#closeMemoryDetail').onclick=closeMemoryDetail;$('#openMemoryFilter').onclick=openMemoryFilters;$('#closeMemoryFilter').onclick=closeSheets;$('#applyMemoryFilter').onclick=applyMemoryFilters;$('#clearMemoryFilter').onclick=clearMemoryFilters;$$('#memoryFilters button').forEach(button=>button.onclick=()=>{memoryState.activePrimaryFilter=button.dataset.filter;$$('#memoryFilters button').forEach(item=>item.classList.toggle('on',item===button));renderMemoryList()});$('#memorySort').onchange=event=>{memoryState.sortMode=event.target.value;renderMemoryList()};$('#memorySearch').oninput=event=>{memoryState.searchQuery=event.target.value;clearTimeout(memorySearchTimer);memorySearchTimer=setTimeout(()=>searchMemory(event.target.value),300)};
 $('#memorySearch').onfocus=$('#memorySearch').onblur=scheduleVisualViewportSync;$('#memoryBody').addEventListener?.('scroll',()=>{memoryState.scrollPosition=$('#memoryBody').scrollTop},{passive:true});
 $('#runBreath').onclick=runBreathDebug;$('#breathQuery').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();runBreathDebug()}};
@@ -550,6 +713,17 @@ $('#save').onclick=async()=>{saveDraft();const p=profile(activeProvider);if(p.ru
 $('#test').onclick=async()=>{saveDraft();const p=profile(activeProvider);$('#testMsg').className='test-msg';$('#testMsg').textContent='正在敲门…';try{if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected')throw new Error(`Claude runtime：${d.state}`);persist();updateStatus();$('#testMsg').textContent=`门开了 · ${d.sessionName||p.runtimeId}`;return}const r=await fetch('/api/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:p})});const d=await r.json();if(!r.ok)throw new Error([d.error,d.detail].filter(Boolean).join('\n'));persist();updateStatus();$('#testMsg').textContent=`门开了 · ${d.model}`}catch(e){$('#testMsg').className='test-msg bad';$('#testMsg').textContent=e.message}};
 if(activeId&&!current())activeId='';if(installedPwa()){if(coldResumeDiagnostic)coldResumeDiagnostic.restoreStoredConversationEntered=true;const selected=restoreStoredConversation();if(coldResumeDiagnostic){coldResumeDiagnostic.restoreStoredConversationSelected=Boolean(selected);coldResumeDiagnostic.selectedMessageCount=selected&&Array.isArray(selected.messages)?Math.min(selected.messages.length,100000):null}} $('#togetherDays').textContent=String(getTogetherDays());renderAssistantProfile();renderUserProfile();renderProviders();selectProvider(activeProvider,false);renderAttachmentDraft();setupThoughtSheet();setupAddToChatDrag();renderAll();
 globalThis.addEventListener?.('resize',scheduleVisualViewportSync);globalThis.visualViewport?.addEventListener?.('resize',scheduleVisualViewportSync);globalThis.visualViewport?.addEventListener?.('scroll',scheduleVisualViewportSync);if(globalThis.ResizeObserver)new ResizeObserver(syncComposerHeight).observe($('main>footer'));syncVisualViewport();syncComposerHeight();
+if(keyboardTraceEnabled()){
+  const exportCard=$('#keyboardTraceExportCard');exportCard.hidden=false;exportCard.style.removeProperty('display');$('#exportKeyboardTrace').onclick=()=>void exportKeyboardTrace();
+  globalThis.addEventListener('resize',()=>recordKeyboardTrace('window.resize'));
+  globalThis.visualViewport?.addEventListener('resize',()=>recordKeyboardTrace('visualViewport.resize'));
+  globalThis.visualViewport?.addEventListener('scroll',()=>recordKeyboardTrace('visualViewport.scroll'));
+  $('#input').addEventListener('focus',()=>recordKeyboardTrace('textarea.focus'));
+  $('#input').addEventListener('blur',()=>recordKeyboardTrace('textarea.blur'));
+  document.addEventListener('visibilitychange',()=>{recordKeyboardTrace('document.visibilitychange');persistKeyboardTrace()});
+  globalThis.addEventListener('pagehide',()=>{recordKeyboardTrace('pagehide');persistKeyboardTrace()});
+  recordKeyboardTrace('trace_initialized');
+}
 
 $('#chatMore').onclick=openAssistantDetails;
 $('#closeAddToChat').onclick=closeAddToChat;$('#allPhotos').onclick=()=>{$('#attachmentInput').click();closeAddToChat()};$('#openCamera').onclick=()=>{$('#cameraInput').click();closeAddToChat()};$('#openFiles').onclick=()=>{$('#fileInput').click();closeAddToChat()};$('#openAppearance').onclick=()=>{closeAddToChat();openUserHub()};
@@ -581,4 +755,7 @@ restoreInterruptedConnection();
 const coldAvailableRuntimePromise=restoreAvailableProductionRuntime();if(coldResumeDiagnostic)void Promise.allSettled([coldResumeRuntimePromise,coldAvailableRuntimePromise].filter(Boolean)).then(()=>restoreColdProductionConversation()).finally(finishColdResumeDiagnostic);
 async function recoverLegacySuppressedFinals(){return false}
 globalThis.navigator?.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.type==='qiuqiu-open-chat'&&event.data.target==='/')void restoreMainChatFromNavigation()});
-if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa24-recovery1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
+if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa34-close-sync1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
+void loadShoppingApprovals();
+globalThis.setInterval?.(()=>{if(document.visibilityState!=='hidden')void loadShoppingApprovals()},5000);
+document.addEventListener?.('visibilitychange',()=>{if(document.visibilityState==='visible')void loadShoppingApprovals()});

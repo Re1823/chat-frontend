@@ -27,6 +27,7 @@ class FakeElement {
   removeAttribute(name) { delete this[name]; }
   getBoundingClientRect() { return this.rect; }
   querySelector() { return this.streamBubble || null; }
+  querySelectorAll() { return []; }
   click() { this.onclick?.(); }
   append(...children){this.children.push(...children)}
   replaceChildren(...children){this.children=[...children]}
@@ -40,6 +41,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     return elements.get(selector);
   };
   const storage = new Map(Object.entries(initialStorage));
+  const diagnosticStorage = new Map();
   const rootStyles = {};
   class TestURL extends URL {}
   TestURL.createObjectURL=()=> 'blob:test';TestURL.revokeObjectURL=()=>{};
@@ -68,6 +70,10 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
       getItem: key => storage.has(key) ? storage.get(key) : null,
       setItem: (key, value) => storage.set(key, String(value))
     },
+    sessionStorage: timing.sessionStorage || {
+      getItem: key => diagnosticStorage.has(key) ? diagnosticStorage.get(key) : null,
+      setItem: (key, value) => diagnosticStorage.set(key, String(value))
+    },
     URL: TestURL,
     document: {
       body:new FakeElement(),
@@ -80,7 +86,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
   };
   vm.createContext(context);
   vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreColdProductionConversation,restoreStoredConversation,capturePageshowDiagnostic,finishColdResumeDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
-  return { api: context.__appTest, get, storage, rootStyles, context };
+  return { api: context.__appTest, get, storage, diagnosticStorage, rootStyles, context };
 }
 
 test('pageshow diagnostic compares frozen memory with storage without hydrating, selecting or rendering',async()=>{
@@ -91,6 +97,54 @@ test('pageshow diagnostic compares frozen memory with storage without hydrating,
   const stored=[{id:'stored-only',provider:'claude_tmux',messages:[{role:'assistant',content:'private fixture'}]}];fixture.storage.set('dwell.sessions',JSON.stringify(stored));fixture.storage.set('dwell.active','stored-only');
   for(const handler of handlers)handler({persisted:true});await new Promise(resolve=>setImmediate(resolve));
   const snapshot=diagnostics[0];assert.equal(snapshot.eventPersisted,true);assert.equal(snapshot.navigationType,'back_forward');assert.equal(snapshot.memorySessionsCount,0);assert.equal(snapshot.storedSessionsCount,1);assert.equal(snapshot.memoryActiveIdPresent,false);assert.equal(snapshot.storedActiveIdPresent,true);assert.equal(snapshot.storedActiveIdValid,true);assert.equal(snapshot.storedCurrentMessageCount,1);assert.equal(snapshot.sessionCountMatches,false);assert.equal(snapshot.activeSelectionMatches,false);assert.equal(snapshot.onboardingVisible,true);assert.equal(snapshot.renderReason,'no_current_session');assert.equal(snapshot.serviceWorkerControllerPresent,true);assert.equal(fixture.api.getState().sessions.length,0);assert.equal(fixture.api.getState().activeId,'');assert.equal(fixture.storage.get('dwell.active'),'stored-only');assert.doesNotMatch(JSON.stringify(snapshot),/stored-only|private fixture/)
+});
+
+test('chat send diagnostics record fetch and stream stages without message text',async()=>{
+  const secretMessage='private user message';
+  const fetchImpl=async url=>{
+    if(url.includes('/status'))return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main'}),{status:200,headers:{'content-type':'application/json'}});
+    assert.equal(url,'/api/chat');
+    return new Response('{"type":"turn_started","turnId":"turn-diag"}\n{"type":"turn_done","turnId":"turn-diag"}\n',{status:200,headers:{'content-type':'application/x-ndjson'}});
+  };
+  const {api,get,diagnosticStorage}=loadApp({},fetchImpl,{randomUUID:()=> 'request-diag'},{navigator:{onLine:true}});
+  api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value=secretMessage;await api.send();
+  const records=JSON.parse(diagnosticStorage.get('dwell.chat-send-diagnostics.v1'));
+  assert.equal(records.length,1);
+  assert.deepEqual(records[0].events.map(item=>item.event),['send_attempt','fetch_call','fetch_resolved','stream_reader_created','stream_first_data']);
+  assert.equal(records[0].events[2].status,200);
+  assert.equal(records[0].events[0].online,true);
+  assert.equal(records[0].events[0].clientRequestId,'request-diag');
+  assert.match(records[0].events[0].timestamp,/^\d{4}-\d\d-\d\dT/);
+  assert.doesNotMatch(JSON.stringify(records),/private user message/);
+});
+
+test('chat send diagnostics distinguish fetch rejection and bound stored attempts',async()=>{
+  const fetchImpl=async url=>{
+    if(url.includes('/status'))return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main'}),{status:200,headers:{'content-type':'application/json'}});
+    if(url.startsWith('/api/chat/recovery/by-request/'))return new Response(JSON.stringify({status:'NOT_FOUND'}),{status:200});
+    assert.equal(url,'/api/chat');throw new TypeError('Failed to fetch');
+  };
+  const {api,get,diagnosticStorage,context}=loadApp({},fetchImpl,{randomUUID:()=> 'request-failed'},{navigator:{onLine:false}});
+  api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='private failed message';await api.send();
+  let records=JSON.parse(diagnosticStorage.get('dwell.chat-send-diagnostics.v1'));
+  assert.deepEqual(records[0].events.map(item=>item.event),['send_attempt','fetch_call','fetch_rejected','connection_lost']);
+  assert.equal(records[0].events[2].exceptionName,'TypeError');assert.equal(records[0].events[2].exceptionMessage,'Failed to fetch');
+  assert.equal(records[0].events[3].online,false);
+  for(let index=0;index<12;index++)context.recordChatSendDiagnostic('send_attempt',{clientRequestId:`request-${index}`},{error:new Error('private message token=secret-value')});
+  records=JSON.parse(diagnosticStorage.get('dwell.chat-send-diagnostics.v1'));
+  assert.equal(records.length,10);
+  assert.equal(records[0].clientRequestId,'request-2');
+  assert.doesNotMatch(JSON.stringify(records),/private message|secret-value/);
+});
+
+test('chat diagnostic asset version is coherent and service worker still bypasses chat POST',async()=>{
+  const [html,sw]=await Promise.all([readFile(new URL('../public/index.html',import.meta.url),'utf8'),readFile(new URL('../public/sw.js',import.meta.url),'utf8')]);
+  assert.match(html,/app\.js\?v=pwa34-close-sync1/);
+  assert.match(appSource,/serviceWorker\.register\('\/sw\.js\?v=pwa34-close-sync1'/);
+  assert.match(sw,/qiuqiu-shell-pwa34-close-sync1/);
+  assert.match(sw,/\/app\.js\?v=pwa34-close-sync1/);
+  assert.match(sw,/if\(request\.method!=='GET'\)return/);
+  assert.match(sw,/url\.pathname\.startsWith\('\/api\/'\)\)return/);
 });
 
 test('notification cold open consumes its marker and reports one bounded bootstrap snapshot before recovery',async()=>{
@@ -290,7 +344,7 @@ test('streaming view batches many deltas into one frame and keeps the current bu
   assert.equal(bubble.textContent,'');
 
   frames[0]();
-  assert.equal(bubble.textContent,'');
+  assert.equal(bubble.textContent,Array.from({length:80},(_,index)=>String(index%10)).join(''));
   assert.equal(box.scrollTop,700);
   assert.equal(box.streamBubble,bubble);
 
@@ -298,9 +352,9 @@ test('streaming view batches many deltas into one frame and keeps the current bu
   view.update({type:'segment_delta',delta:'**final**'});
   assert.equal(bubble.innerHTML,'');
   view.finish();
-  assert.equal(bubble.textContent,'');
-  assert.match(bubble.innerHTML,/<strong>final<\/strong>/);
-  assert.deepEqual(cancelled,[2]);
+  assert.equal(bubble.textContent,Array.from({length:80},(_,index)=>String(index%10)).join(''));
+  assert.equal(bubble.innerHTML,'');
+  assert.equal(cancelled.length,1);
 });
 
 test('toast preserves long errors and follows a growing composer', () => {
@@ -353,6 +407,7 @@ test('viewport open and close preserve bottom intent without a send or turn', ()
   messages.scrollHeight=1200;
   messages.clientHeight=400;
   messages.scrollTop=790;
+  api.setViewportBottomAnchor(true);
   api.scheduleVisualViewportSync();
   messages.clientHeight=240;
   frames.shift()();
@@ -648,26 +703,26 @@ async function liveViewFixture(){
   return {api,get,done,emit,tick,calls,disconnect:()=>source.error(new TypeError('Load failed')),bubble:()=>[...nodes.values()].at(-1),out:()=>api.getState().sessions[0].messages.at(-1),counts:()=>({aborts,cancels})};
 }
 
-test('live stream survives Memory navigation while ordinary text stays hidden until complete',async()=>{
+test('live stream survives Memory navigation and creates a bubble on first real text',async()=>{
   const f=await liveViewFixture();assert.equal(f.out().pending,true);assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
   f.api.showMemory();await f.emit({type:'segment_delta',delta:'first'});f.api.showChat();
-  assert.equal(assistantArticles(f.get('#messages').innerHTML),0);assert.equal(f.api.getState().activeTurnId,'view-turn');assert.equal(f.api.getState().sending,true);
-  await f.emit({type:'segment_delta',delta:' second'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  assert.equal(assistantArticles(f.get('#messages').innerHTML),1);assert.equal(f.api.getState().activeTurnId,'view-turn');assert.equal(f.api.getState().sending,true);
+  await f.emit({type:'segment_delta',delta:' second'});assert.equal(assistantArticles(f.get('#messages').innerHTML),1);
   assert.deepEqual(f.counts(),{aborts:0,cancels:0});assert.equal(f.calls.filter(x=>x==='/api/chat').length,1);assert(!f.calls.includes('/api/chat/stop'));
   await f.emit({type:'turn_done'});await f.done;assert.equal(f.api.getState().sending,false);assert.equal(f.out().pending,false);assert.match(f.get('#messages').innerHTML,/first second/);
 });
 
-test('sidebar and returning Chat preserve a hidden pending ordinary reply without abort or stop',async()=>{
+test('sidebar and returning Chat reveal pending ordinary text without abort or stop',async()=>{
   const f=await liveViewFixture();f.get('#menuBtn').click();f.get('#menuBtn').click();f.api.showChat();
   assert.equal(assistantArticles(f.get('#messages').innerHTML),0);assert.equal(f.out().pending,true);
   assert.equal(f.api.getState().activeTurnId,'view-turn');assert.deepEqual(f.counts(),{aborts:0,cancels:0});assert(!f.calls.includes('/api/chat/stop'));
-  await f.emit({type:'segment_delta',delta:'body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  await f.emit({type:'segment_delta',delta:'body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),1);
   await f.emit({type:'turn_done'});await f.done;assert.match(f.get('#messages').innerHTML,/body/);
 });
 
-test('rerender does not expose ordinary deltas and finalizes once into the current DOM',async()=>{
+test('rerender creates one bubble on first ordinary delta and finalizes into the current DOM',async()=>{
   const f=await liveViewFixture();f.api.renderMessages(false);assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
-  await f.emit({type:'segment_delta',delta:'new node body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),0);
+  await f.emit({type:'segment_delta',delta:'new node body'});assert.equal(assistantArticles(f.get('#messages').innerHTML),1);
   await f.emit({type:'turn_done'});await f.done;assert.equal(assistantArticles(f.get('#messages').innerHTML),1);assert.match(f.get('#messages').innerHTML,/new node body/);
 });
 

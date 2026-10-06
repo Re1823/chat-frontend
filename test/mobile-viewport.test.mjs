@@ -9,7 +9,7 @@ const app=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
 test('mobile viewport remains zoomable while using the device width and safe area',()=>{
   assert.match(html,/<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">/);
   assert.doesNotMatch(html,/user-scalable=no|maximum-scale|minimum-scale/);
-  assert.match(css,/\.app\{position:fixed;[^}]*top:0;[^}]*height:var\(--vv-bottom,100dvh\)/);
+  assert.match(css,/\.app\{position:fixed;[^}]*height:var\(--vv-bottom,100dvh\)/);
   assert.match(css,/safe-area-inset-bottom/);
   assert.match(css,/overflow-x:hidden/);
 });
@@ -42,7 +42,7 @@ test('composer Enter is native newline only and Send has no Stop binding',()=>{
 });
 
 test('visual viewport resize and scroll drive the shell geometry and toast positioning',()=>{
-  assert.match(app,/function syncVisualViewport\(\)/);
+  assert.match(app,/function syncVisualViewport\(/);
   assert.match(app,/visual\?\.height/);
   assert.match(app,/visual\?\.offsetTop/);
   assert.match(app,/setProperty\('--vv-height'/);
@@ -53,9 +53,11 @@ test('visual viewport resize and scroll drive the shell geometry and toast posit
   assert.match(app,/requestAnimationFrame/);
 });
 
-test('header consumes visual top while the shell bottom remains independently anchored',()=>{
-  assert.match(css,/\.app\{position:fixed;[^}]*top:0;[^}]*height:var\(--vv-bottom,100dvh\)/);
+test('chat shell restores the stable fixed viewport geometry',()=>{
+  assert.match(css,/\.app\{position:fixed;[^}]*height:var\(--vv-bottom,100dvh\)/);
   assert.match(css,/main\{min-height:0;padding-top:var\(--vv-offset-top,0px\)\}/);
+  assert.doesNotMatch(css,/\.keyboard-open \.app>main:not\(\.memory-mode\)\{height:/);
+  assert.match(css,/\.keyboard-open main:not\(\.memory-mode\)>footer\{padding-bottom:8px\}/);
   assert.doesNotMatch(css,/main\{[^}]*transition/);
   assert.doesNotMatch(css,/main>header\{[^}]*transition/);
 });
@@ -63,6 +65,6 @@ test('header consumes visual top while the shell bottom remains independently an
 test('bottom intent also aligns short histories and is cancelled only by user scrolling',()=>{
   assert.match(css,/\.messages\.bottom-anchored>:first-child\{margin-top:auto\}/);
   assert.match(app,/keepBottomThroughViewportResize/);
-  assert.match(app,/touchmove',cancelViewportBottomAnchor/);
+  assert.match(app,/touchmove',\(\)=>\{noteTimelineUserScroll\(\);cancelViewportBottomAnchor\(\)\}/);
   assert.match(app,/event\.deltaY<0/);
 });
