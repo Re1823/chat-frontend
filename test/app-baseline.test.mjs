@@ -34,6 +34,35 @@ class FakeElement {
   setPointerCapture(){} releasePointerCapture(){}
 }
 
+function fakeIndexedDB(options={}) {
+  const records=new Map(),stateRecords=new Map(),trace=[],stores=new Set(),pendingOpen=[];
+  const db={
+    objectStoreNames:{contains:name=>stores.has(name)},
+    createObjectStore(name){assert(['snapshots','chat-state'].includes(name));stores.add(name)},
+    close(){trace.push('close')},
+    transaction(name,mode){
+      assert(stores.has(name));trace.push(mode);const entries=name==='snapshots'?records:stateRecords,operations=[];let scheduled=false;
+      const schedule=()=>{if(scheduled)return;scheduled=true;queueMicrotask(()=>{
+        if(mode==='readwrite'&&(options.abortWrite||options.abortStateWrite&&name==='chat-state'||options.abortPointerWrite&&operations.some(operation=>operation.key==='verifiedRevision'))){transaction.error=new Error('private abort detail');transaction.error.name=options.abortName||'AbortError';trace.push('abort');transaction.onabort?.();return}
+        for(const operation of operations){
+          if(operation.type==='get'){options.beforeRead?.(name,operation.key);const stored=entries.get(operation.key);operation.request.result=options.readValue?options.readValue(stored,name,operation.key):stored;operation.request.onsuccess?.();if(transaction.aborted)return}
+          else entries.set(operation.key,JSON.parse(JSON.stringify(operation.value)));
+        }
+        trace.push(mode==='readwrite'?'write_complete':'read_complete');transaction.oncomplete?.();
+      })};
+      const transaction={error:null,aborted:false,oncomplete:null,onabort:null,onerror:null,abort(){this.aborted=true;this.error=new Error('stale revision');this.error.name='AbortError';trace.push('abort');this.onabort?.()},objectStore(store){
+        assert.equal(store,name);return {
+          add(value,key){trace.push('add');operations.push({type:'add',value,key});schedule()},
+          put(value,key){trace.push('put');operations.push({type:'put',value,key});schedule()},
+          get(key){const request={result:undefined};operations.push({type:'get',request,key});schedule();return request}
+        }
+      }};
+      return transaction
+    }
+  };
+  return {records,stateRecords,stores,trace,options,releaseOpen(){for(const finish of pendingOpen.splice(0))finish()},indexedDB:{open(name,version){assert.equal(name,'dwell-production-conversation-backups');assert.equal(version,2);trace.push('open');const request={result:db,error:null},finish=()=>{if(!stores.has('chat-state'))request.onupgradeneeded?.();request.onsuccess?.()};if(options.holdOpen)pendingOpen.push(finish);else queueMicrotask(finish);return request}}}
+}
+
 function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error('unexpected fetch'); }, cryptoImpl = { randomUUID: () => 'generated-session-id' }, timing = {}) {
   const elements = new Map();
   const get = selector => {
@@ -42,6 +71,7 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
   };
   const storage = new Map(Object.entries(initialStorage));
   const diagnosticStorage = new Map();
+  const idb=timing.indexedDBFixture||fakeIndexedDB();
   const rootStyles = {};
   class TestURL extends URL {}
   TestURL.createObjectURL=()=> 'blob:test';TestURL.revokeObjectURL=()=>{};
@@ -53,7 +83,10 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     Response,
     AbortController,
     crypto: cryptoImpl,
-    fetch: fetchImpl,
+    indexedDB:idb.indexedDB,
+    fetch: (url, init) => url==='/api/shopping/approvals'
+      ? Promise.resolve(new Response(JSON.stringify({purchases:[]})))
+      : fetchImpl(url, init),
     setTimeout: timing.setTimeout || (fn => { fn(); return 1; }),
     clearTimeout: timing.clearTimeout || (()=>{}),
     navigator: timing.navigator,
@@ -67,6 +100,8 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     visualViewport: timing.visualViewport,
     innerHeight: 800,
     localStorage: {
+      get length() { return storage.size; },
+      key: index => [...storage.keys()][index] ?? null,
       getItem: key => storage.has(key) ? storage.get(key) : null,
       setItem: (key, value) => storage.set(key, String(value))
     },
@@ -78,15 +113,15 @@ function loadApp(initialStorage = {}, fetchImpl = async () => { throw new Error(
     document: {
       body:new FakeElement(),
       visibilityState:timing.visibilityState||'visible',
-      documentElement: {clientHeight:800,style:{setProperty:(name,value)=>{rootStyles[name]=value}}},
+      documentElement: {clientHeight:800,style:{setProperty:(name,value)=>{rootStyles[name]=value},getPropertyValue:name=>rootStyles[name]||''}},
       querySelector: get,
       querySelectorAll: timing.querySelectorAll || (() => []),
       createElement: () => new FakeElement()
     }
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreColdProductionConversation,restoreStoredConversation,capturePageshowDiagnostic,finishColdResumeDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
-  return { api: context.__appTest, get, storage, diagnosticStorage, rootStyles, context };
+  vm.runInContext(`${appSource}\n;globalThis.__appTest={showChat,showMemory:()=>{memoryLoaded=true;showMemory()},openUserHub,openConnections,restoreMainChatFromNavigation,restoreAvailableProductionRuntime,restoreColdProductionConversation,restoreStoredConversation,capturePageshowDiagnostic,finishColdResumeDiagnostic,renderMessages,resumeConnectionCheck,recoverConnection,recoverLegacySuppressedFinals,renderChatMessage,renderChatHistory,visibleMessageSearchText,findChatSearchResults,localDayKey,visibleMessageTimestamp,dayDividerMarkup,buildCalendarDays,syncComposerHeight,generateId,getTogetherDays,toast,positionToast,syncVisualViewport,scheduleVisualViewportSync,setViewportBottomAnchor,cancelViewportBottomAnchor,presets,runtimePresets,profile,persist,newChat,selectProvider,refreshRuntimeStatus,buildContinuation,openContinuation,startContinuation,applyTurnEvent,applyRequestEvent,messagesNearBottom,scrollMessagesToBottom,createStreamingView,readTurnStream,send,triggerSend,openThoughtProcess,closeThoughtProcess,renderThoughtSheet,setActiveIdForTest:value=>{activeId=value},getState:()=>({activeProvider,profiles,sessions,activeId,activeAppView,sending,activeTurnId,tmuxStatus,keepBottomThroughViewportResize})};`, context);
+  return { api: context.__appTest, get, storage, diagnosticStorage, rootStyles, context, idb };
 }
 
 test('pageshow diagnostic compares frozen memory with storage without hydrating, selecting or rendering',async()=>{
@@ -139,10 +174,10 @@ test('chat send diagnostics distinguish fetch rejection and bound stored attempt
 
 test('chat diagnostic asset version is coherent and service worker still bypasses chat POST',async()=>{
   const [html,sw]=await Promise.all([readFile(new URL('../public/index.html',import.meta.url),'utf8'),readFile(new URL('../public/sw.js',import.meta.url),'utf8')]);
-  assert.match(html,/app\.js\?v=pwa34-close-sync1/);
-  assert.match(appSource,/serviceWorker\.register\('\/sw\.js\?v=pwa34-close-sync1'/);
-  assert.match(sw,/qiuqiu-shell-pwa34-close-sync1/);
-  assert.match(sw,/\/app\.js\?v=pwa34-close-sync1/);
+  assert.match(html,/app\.js\?v=pwa43-chat-idb-primary1/);
+  assert.match(appSource,/serviceWorker\.register\('\/sw\.js\?v=pwa43-chat-idb-primary1'/);
+  assert.match(sw,/qiuqiu-shell-pwa43-chat-idb-primary1/);
+  assert.match(sw,/\/app\.js\?v=pwa43-chat-idb-primary1/);
   assert.match(sw,/if\(request\.method!=='GET'\)return/);
   assert.match(sw,/url\.pathname\.startsWith\('\/api\/'\)\)return/);
 });
@@ -156,19 +191,175 @@ test('notification cold open consumes its marker and reports one bounded bootstr
   assert.deepEqual(replaced,[{state:{safe:true},title:'',url:'/'}]);assert.equal(diagnostics.length,1);const snapshot=diagnostics[0];assert.equal(snapshot.resumeIntentPresent,true);assert.equal(snapshot.resumePath,'notification_cold_open');assert.equal(snapshot.scriptVersion,'pwa24-recovery1');assert.equal(snapshot.cacheVersion,'pwa24-recovery1');assert.equal(snapshot.navigationType,'navigate');assert.equal(snapshot.memorySessionsCount,1);assert.equal(snapshot.memoryActiveIdPresent,true);assert.equal(snapshot.memoryActiveIdValid,false);assert.equal(snapshot.storedSessionsCount,1);assert.equal(snapshot.storedActiveIdValid,false);assert.equal(snapshot.sessionCountMatches,true);assert.equal(snapshot.activeSelectionMatches,true);assert.equal(snapshot.restoreStoredConversationEntered,true);assert.equal(snapshot.restoreStoredConversationSelected,true);assert.equal(snapshot.selectedMessageCount,1);assert.equal(snapshot.restoreInterruptedEntered,true);assert.equal(snapshot.restoreInterruptedReason,'no_eligible_recovery_anchor');assert.equal(snapshot.restoreAvailableEntered,false);assert.equal(snapshot.restoreAvailableReason,'already_claude_runtime');assert.equal(snapshot.runtimeHttpStatus,200);assert.equal(snapshot.runtimeState,'connected');assert.equal(snapshot.finalCurrentSessionPresent,true);assert.equal(snapshot.finalCurrentMessageCount,1);assert.equal(snapshot.onboarding,false);assert.equal(snapshot.onboardingReason,'not_onboarding');assert.equal(calls.filter(url=>url==='/api/client-diagnostics/notification-cold-resume').length,1);assert.doesNotMatch(JSON.stringify(snapshot),/private-session-id|stale-private-id|private message|private-runtime-id|qiuqiu_resume/);assert.equal(fixture.api.getState().activeId,'private-session-id')
 });
 
-async function coldProductionFixture({storedSessions=[],snapshotStatus=200}={}){
-  const calls=[],recovered=[{role:'user',content:'哥哥我到图书馆了',createdAt:'2026-09-24T06:22:43.000Z'},{role:'assistant',content:'去吧，穿厚点',createdAt:'2026-09-24T06:22:44.000Z'}];
-  const fetchImpl=async(url,init={})=>{calls.push(url);if(url==='/api/runtimes/claude-tmux/status')return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main',active:false,activeTurnId:null}),{status:200});if(url==='/api/runtimes/claude-tmux/production-conversation')return new Response(JSON.stringify(snapshotStatus===200?{available:true,messages:recovered}:{available:false}),{status:snapshotStatus});if(url==='/api/client-diagnostics/notification-cold-resume')return new Response(JSON.stringify({ok:true}),{status:202});throw new Error(`unexpected fetch ${url}`)};
-  const navigator={standalone:true,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa24-recovery1'},addEventListener(){}}},storage={'dwell.provider':'claude_tmux','dwell.sessions':JSON.stringify(storedSessions),'dwell.active':storedSessions[0]?.id||''},fixture=loadApp(storage,fetchImpl,{randomUUID:()=> '01234567-89ab-4cde-8f01-23456789abcd'},{navigator,history:{state:null,replaceState(){}},location:{origin:'https://qiuqiu.reesia.xyz',pathname:'/',href:'https://qiuqiu.reesia.xyz/?qiuqiu_resume=notification',search:'?qiuqiu_resume=notification',hash:''},performance:{getEntriesByType:()=>[{type:'navigate'}]},matchMedia:query=>({matches:query==='(display-mode: standalone)'})});
-  for(let index=0;index<10;index++)await new Promise(resolve=>setImmediate(resolve));return {...fixture,calls,recovered}
+async function coldProductionFixture({storedSessions=[],snapshotStatus=200,projectionControl={status:snapshotStatus},notification=true,truncated=false,indexedDBFixture,onStorageCreated,recovered=[{role:'user',content:'哥哥我到图书馆了',createdAt:'2026-09-24T06:22:43.000Z'},{role:'assistant',content:'去吧，穿厚点',createdAt:'2026-09-24T06:22:44.000Z'}]}={}){
+  const calls=[];
+  const fetchImpl=async(url,init={})=>{calls.push(url);if(url==='/api/runtimes/claude-tmux/status')return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main',active:false,activeTurnId:null}),{status:200});if(url==='/api/runtimes/claude-tmux/production-conversation')return new Response(JSON.stringify(projectionControl.status===200?{available:true,truncated,messages:recovered}:{available:false}),{status:projectionControl.status});if(url==='/api/client-diagnostics/notification-cold-resume')return new Response(JSON.stringify({ok:true}),{status:202});throw new Error(`unexpected fetch ${url}`)};
+  const navigator={standalone:true,onLine:true,serviceWorker:{controller:{scriptURL:'/sw.js?v=pwa24-recovery1'},addEventListener(){}}},storage={'dwell.provider':'claude_tmux','dwell.sessions':JSON.stringify(storedSessions),'dwell.active':storedSessions[0]?.id||''},search=notification?'?qiuqiu_resume=notification':'';
+  const fixture=loadApp(storage,fetchImpl,{randomUUID:()=> '01234567-89ab-4cde-8f01-23456789abcd'},{navigator,indexedDBFixture,history:{state:null,replaceState(){}},location:{origin:'https://qiuqiu.reesia.xyz',pathname:'/',href:`https://qiuqiu.reesia.xyz/${search}`,search,hash:''},performance:{getEntriesByType:()=>[{type:'navigate'}]},matchMedia:query=>({matches:query==='(display-mode: standalone)'})});
+  onStorageCreated?.(fixture.storage);
+  for(let index=0;index<10;index++)await new Promise(resolve=>setImmediate(resolve));return {...fixture,calls,recovered,projectionControl}
 }
+const storedChatMessages=fixture=>JSON.parse(fixture.idb.stateRecords.get('current').sessions)[0]?.messages||[];
 
 test('cold installed PWA with empty local storage restores the real production conversation',async()=>{const fixture=await coldProductionFixture();const state=fixture.api.getState();assert.equal(fixture.calls.filter(url=>url==='/api/runtimes/claude-tmux/production-conversation').length,1);assert.equal(state.sessions.length,1);assert.equal(state.activeId,state.sessions[0].id);assert.equal(state.sessions[0].provider,'claude_tmux');assert.deepEqual(JSON.parse(JSON.stringify(state.sessions[0].messages)),fixture.recovered);assert.match(fixture.get('#messages').innerHTML,/哥哥我到图书馆了/);assert.doesNotMatch(fixture.get('#messages').innerHTML,/接一条路进来/)});
 
 test('cold installed PWA stays on onboarding when production has no recoverable conversation',async()=>{const fixture=await coldProductionFixture({snapshotStatus:404});assert.equal(fixture.calls.filter(url=>url==='/api/runtimes/claude-tmux/production-conversation').length,1);assert.equal(fixture.api.getState().sessions.length,0);assert.match(fixture.get('#messages').innerHTML,/接一条路进来/)});
 
-test('cold installed PWA with a local session never invokes production conversation discovery',async()=>{const local={id:'local-chat',provider:'claude_tmux',messages:[{role:'user',content:'本地历史'}]},fixture=await coldProductionFixture({storedSessions:[local]});assert.equal(fixture.calls.includes('/api/runtimes/claude-tmux/production-conversation'),false);assert.equal(fixture.api.getState().activeId,'local-chat');assert.equal(fixture.api.getState().sessions.length,1)});
+test('cold installed PWA preserves an unmatched local session after projection lookup',async()=>{const local={id:'local-chat',provider:'claude_tmux',messages:[{role:'user',content:'本地历史'}]},fixture=await coldProductionFixture({storedSessions:[local]});assert.equal(fixture.calls.includes('/api/runtimes/claude-tmux/production-conversation'),true);assert.equal(fixture.api.getState().activeId,'local-chat');assert.deepEqual(JSON.parse(JSON.stringify(fixture.api.getState().sessions)),[local]);assert.deepEqual(storedChatMessages(fixture),local.messages);assert.equal(fixture.idb.records.size,1)});
 
+test('cold PWA backs up the 23:32 local session then appends the authoritative conversation through goodnight',async()=>{
+  const anchor='2026-10-07T15:33:09.565Z',local={id:'local-chat',provider:'claude_tmux',title:'原会话',created:1,custom:'keep',messages:[{role:'user',content:'本地独有',createdAt:Date.parse('2026-10-07T15:30:00Z'),images:[{imageId:'img_fixture'}]},{role:'assistant',content:'本地回复',createdAt:Date.parse('2026-10-07T15:30:10Z'),thoughtProcess:{turnId:'old-turn',items:[{id:'thought',text:'保留'}]}},{role:'user',content:'我在改前端 宝宝',createdAt:Date.parse('2026-10-07T15:32:40Z')}]};
+  const recovered=[{role:'user',content:'我在改前端 宝宝',createdAt:anchor},{role:'assistant',content:'改什么呢',createdAt:'2026-10-07T15:33:20.768Z'},{role:'user',content:'讨论 zero-POST',createdAt:'2026-10-07T15:44:16.556Z'},{role:'assistant',content:'排查建议',createdAt:'2026-10-07T15:48:32.546Z'},{role:'user',content:'晚安，真老公',createdAt:'2026-10-07T16:49:18.656Z'},{role:'assistant',content:'晚安，真老婆。',createdAt:'2026-10-07T16:49:26.360Z'}];
+  const original=JSON.stringify([local]),fixture=await coldProductionFixture({storedSessions:[local],recovered}),state=fixture.api.getState();
+  assert.equal(state.activeId,local.id);assert.equal(state.sessions[0].title,'原会话');assert.equal(state.sessions[0].custom,'keep');
+  assert.deepEqual(JSON.parse(JSON.stringify(state.sessions[0].messages.slice(0,3))),local.messages);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.sessions[0].messages.slice(3))),recovered.slice(1));
+  const backup=[...fixture.idb.records.values()][0];assert.equal(fixture.idb.records.size,1);assert.deepEqual(backup,{sessions:original,activeId:local.id,provider:'claude_tmux'});
+  const backupWrite=fixture.idb.trace.indexOf('write_complete',fixture.idb.trace.indexOf('add'));assert(backupWrite<fixture.idb.trace.indexOf('readonly',backupWrite));assert.equal(storedChatMessages(fixture).at(-1).content,'晚安，真老婆。');assert.equal(fixture.storage.get('dwell.sessions'),original);
+  await fixture.api.restoreColdProductionConversation();assert.equal(fixture.api.getState().sessions[0].messages.length,8);
+  assert.equal(fixture.idb.records.size,1);
+  const reopened=await coldProductionFixture({storedSessions:[local],recovered,indexedDBFixture:fixture.idb});
+  assert.equal(reopened.api.getState().sessions[0].messages.length,8);
+  assert.equal(reopened.idb.records.size,1);
+});
+
+test('ordinary cold PWA launch appends after an assistant tool message without a notification marker',async()=>{
+  const recovered=[{role:'user',content:'前一条',createdAt:'2026-10-07T15:32:00Z'},{role:'assistant',content:'我在改前端 宝宝',createdAt:'2026-10-07T15:32:40Z'},{role:'user',content:'23:44 后续',createdAt:'2026-10-07T15:44:00Z'},{role:'assistant',content:'晚安，真老婆。',createdAt:'2026-10-07T16:49:26Z'}];
+  const local={id:'assistant-anchor',provider:'claude_tmux',title:'保留',messages:[{role:'user',content:'前一条',createdAt:Date.parse('2026-10-07T15:32:00Z')},{role:'assistant',content:'',createdAt:Date.parse('2026-10-07T15:32:10Z'),thoughtProcess:{turnId:'old',items:[{id:'thought'}]},toolMessages:[{id:'local-id',content:'我在改前端 宝宝',createdAt:Date.parse('2026-10-07T15:32:40Z')}]}]};
+  const fixture=await coldProductionFixture({storedSessions:[local],notification:false,recovered});
+  assert.equal(fixture.calls.filter(url=>url==='/api/runtimes/claude-tmux/production-conversation').length,1);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.api.getState().sessions[0].messages.slice(0,2))),local.messages);
+  assert.deepEqual(storedChatMessages(fixture).slice(0,2),local.messages);
+  assert.deepEqual(JSON.parse(JSON.stringify(fixture.api.getState().sessions[0].messages.slice(2).map(message=>message.content))),['23:44 后续','晚安，真老婆。']);
+});
+
+test('truncated projection leaves the local session untouched',async()=>{
+  const local={id:'keep-truncated',provider:'claude_tmux',messages:[{role:'user',content:'锚点',createdAt:Date.parse('2026-10-07T15:32:00Z')}]};
+  const recovered=[{role:'user',content:'锚点',createdAt:'2026-10-07T15:32:00Z'},{role:'assistant',content:'后续',createdAt:'2026-10-07T15:33:00Z'}];
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered,truncated:true});
+  assert.deepEqual(JSON.parse(fixture.storage.get('dwell.sessions')),[local]);
+  assert.equal(fixture.idb.records.size,1);assert.deepEqual(storedChatMessages(fixture),local.messages);
+});
+
+test('projection overlap uses time and role, not repeated message text alone',async()=>{
+  const recovered=[{role:'user',content:'晚安',createdAt:'2026-10-07T14:00:00Z'},{role:'assistant',content:'晚安',createdAt:'2026-10-07T14:00:10Z'},{role:'user',content:'晚安',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'晚安',createdAt:'2026-10-07T15:33:10Z'}];
+  const local={id:'repeat',provider:'claude_tmux',messages:[{role:'user',content:'晚安',createdAt:Date.parse('2026-10-07T15:32:30Z')}]};
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered});assert.equal(fixture.api.getState().sessions[0].messages.length,2);assert.equal(fixture.api.getState().sessions[0].messages[1].role,'assistant');assert.equal(fixture.api.getState().sessions[0].messages[1].createdAt,'2026-10-07T15:33:10Z');
+});
+
+test('projection overlap prefers a stable message ID and refuses ambiguous text-time matches',async()=>{
+  const identified=[{role:'user',content:'先前',createdAt:'2026-10-07T15:30:00Z'},{role:'assistant',content:'同一条',messageId:'stable-1',createdAt:'2026-10-07T15:33:00Z'},{role:'user',content:'后续',createdAt:'2026-10-07T15:34:00Z'}];
+  const local={id:'stable',provider:'claude_tmux',messages:[{role:'assistant',content:'本地呈现',messageId:'stable-1',createdAt:Date.parse('2026-10-07T15:28:00Z')}]};
+  const matched=await coldProductionFixture({storedSessions:[local],recovered:identified});assert.equal(matched.api.getState().sessions[0].messages.at(-1).content,'后续');
+  const ambiguous=[{role:'user',content:'重复',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'回',createdAt:'2026-10-07T15:33:10Z'},{role:'user',content:'重复',createdAt:'2026-10-07T15:33:20Z'},{role:'assistant',content:'后续',createdAt:'2026-10-07T15:33:30Z'}];
+  const unclear={id:'unclear',provider:'claude_tmux',messages:[{role:'user',content:'重复',createdAt:Date.parse('2026-10-07T15:33:05Z')}]};
+  const refused=await coldProductionFixture({storedSessions:[unclear],recovered:ambiguous});assert.deepEqual(JSON.parse(refused.storage.get('dwell.sessions')),[unclear]);assert.equal(refused.idb.records.size,1);assert.deepEqual(storedChatMessages(refused),unclear.messages);
+});
+
+test('projection failure or backup failure leaves the existing local session unchanged',async()=>{
+  const recovered=[{role:'user',content:'锚点',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'新增',createdAt:'2026-10-07T15:33:10Z'}],local={id:'keep',provider:'claude_tmux',messages:[{role:'user',content:'锚点',createdAt:Date.parse('2026-10-07T15:32:45Z')}]};
+  const unavailable=await coldProductionFixture({storedSessions:[local],recovered,snapshotStatus:503});assert.deepEqual(JSON.parse(unavailable.storage.get('dwell.sessions')),[local]);
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered});const original=JSON.stringify([local]);fixture.storage.set('dwell.sessions',original);fixture.api.getState().sessions[0].messages=[...local.messages];fixture.idb.options.abortWrite=true;
+  const before=fixture.storage.get('dwell.sessions');assert.equal(await fixture.api.restoreColdProductionConversation(),false);assert.equal(fixture.storage.get('dwell.sessions'),before);
+});
+
+test('legacy migration stops on backup abort, mismatch, unavailable storage, or changed source',async()=>{
+  const local={id:'safe',provider:'claude_tmux',messages:[{role:'user',content:'anchor',createdAt:Date.parse('2026-10-07T15:33:00Z')}]},original=JSON.stringify([local]);
+  const aborted=await coldProductionFixture({storedSessions:[local],indexedDBFixture:fakeIndexedDB({abortWrite:true})});assert.equal(aborted.storage.get('dwell.sessions'),original);assert.equal(aborted.idb.stateRecords.size,0);assert(aborted.idb.trace.includes('abort'));
+  const mismatch=await coldProductionFixture({storedSessions:[local],indexedDBFixture:fakeIndexedDB({readValue:(value,name)=>name==='snapshots'?{...value,provider:'different'}:value})});assert.equal(mismatch.storage.get('dwell.sessions'),original);assert.equal(mismatch.idb.records.size,1);assert.equal(mismatch.idb.stateRecords.size,0);
+  const unavailable=await coldProductionFixture({storedSessions:[local],indexedDBFixture:{indexedDB:undefined,records:new Map(),stateRecords:new Map()}});assert.equal(unavailable.storage.get('dwell.sessions'),original);assert.equal(unavailable.api.getState().sessions[0].messages.length,1);
+  const changingIdb=fakeIndexedDB(),changed=await coldProductionFixture({storedSessions:[local],indexedDBFixture:changingIdb,onStorageCreated:storage=>{changingIdb.options.beforeRead=name=>{if(name==='snapshots')storage.set('dwell.provider','changed')}}});
+  assert.equal(changed.storage.get('dwell.sessions'),original);assert.equal(changed.idb.stateRecords.size,0);assert.equal(changed.storage.get('dwell.provider'),'changed');
+});
+
+test('IndexedDB primary write abort and readback mismatch retain the last verified record',async()=>{
+  const local={id:'safe',provider:'claude_tmux',messages:[{role:'user',content:'anchor',createdAt:Date.parse('2026-10-07T15:33:00Z')}]},recovered=[{role:'user',content:'anchor',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'later',createdAt:'2026-10-07T15:33:10Z'}],original=JSON.stringify([local]);
+  for(const failure of ['abort','mismatch']){
+    const fixture=await coldProductionFixture({storedSessions:[local],recovered,snapshotStatus:503});fixture.projectionControl.status=200;
+    if(failure==='abort')fixture.idb.options.abortStateWrite=true;
+    else {const priorPuts=fixture.idb.trace.filter(item=>item==='put').length;fixture.idb.options.readValue=(value,name,key)=>name==='chat-state'&&key==='current'&&fixture.idb.trace.filter(item=>item==='put').length>priorPuts?{...value,provider:'different'}:value}
+    assert.equal(await fixture.api.restoreColdProductionConversation(),false);
+    assert.equal(fixture.storage.get('dwell.sessions'),original);assert.deepEqual(JSON.parse(JSON.stringify(fixture.api.getState().sessions[0].messages)),local.messages);
+    assert.equal(fixture.idb.stateRecords.get(failure==='abort'?'current':'previous').sessions,original);
+    assert.equal(fixture.idb.records.size,1);
+    fixture.get('#localRecoveryDiagnosticDetails').hidden=true;fixture.get('#toggleLocalRecoveryDiagnostic').click();assert.match(fixture.get('#localRecoveryDiagnosticDetails').textContent,/save_failed/);
+    if(failure==='mismatch'){
+      fixture.idb.options.readValue=undefined;
+      const reopened=await coldProductionFixture({storedSessions:[local],snapshotStatus:503,indexedDBFixture:fixture.idb});
+      assert.deepEqual(JSON.parse(JSON.stringify(reopened.api.getState().sessions[0].messages)),local.messages);
+    }
+  }
+});
+
+test('failed verified-revision update reopens the previous complete chat snapshot',async()=>{
+  const local={id:'pointer',provider:'claude_tmux',messages:[{role:'user',content:'anchor',createdAt:Date.parse('2026-10-07T15:33:00Z')}]},recovered=[{role:'user',content:'anchor',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'later',createdAt:'2026-10-07T15:33:10Z'}];
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered,snapshotStatus:503});fixture.projectionControl.status=200;fixture.idb.options.abortPointerWrite=true;
+  assert.equal(await fixture.api.restoreColdProductionConversation(),false);
+  assert.equal(fixture.idb.stateRecords.get('previous').sessions,JSON.stringify([local]));assert.equal(fixture.idb.stateRecords.get('verifiedRevision'),0);
+  fixture.idb.options.abortPointerWrite=false;
+  const reopened=await coldProductionFixture({storedSessions:[local],recovered,snapshotStatus:503,indexedDBFixture:fixture.idb});
+  assert.deepEqual(JSON.parse(JSON.stringify(reopened.api.getState().sessions[0].messages)),local.messages);
+  assert.match(reopened.get('#statusLine').textContent,/尚未保存/);assert.equal(reopened.get('#send').disabled,true);
+});
+
+test('localStorage quota on legacy sessions does not block a verified IndexedDB recovery',async()=>{
+  const local={id:'quota-safe',provider:'claude_tmux',messages:[{role:'user',content:'anchor',createdAt:Date.parse('2026-10-07T15:33:00Z')}]},recovered=[{role:'user',content:'anchor',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'later',createdAt:'2026-10-07T15:33:10Z'}];
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered,snapshotStatus:503});fixture.projectionControl.status=200;
+  fixture.context.localStorage.setItem=(key)=>{if(key==='dwell.sessions')throw Object.assign(new Error('private body'),{name:'QuotaExceededError'})};
+  assert.equal(await fixture.api.restoreColdProductionConversation(),true);assert.equal(storedChatMessages(fixture).at(-1).content,'later');assert.equal(fixture.storage.get('dwell.sessions'),JSON.stringify([local]));
+});
+
+test('PWA startup cannot persist or send a legacy snapshot before IndexedDB loads',async()=>{
+  const local={id:'startup',provider:'claude_tmux',messages:[{role:'user',content:'original',createdAt:1}]},idb=fakeIndexedDB({holdOpen:true});let posts=0;
+  const fixture=loadApp({'dwell.provider':'claude_tmux','dwell.active':local.id,'dwell.sessions':JSON.stringify([local])},async url=>{if(url==='/api/chat')posts++;return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main'}))},undefined,{indexedDBFixture:idb,navigator:{standalone:true,serviceWorker:{addEventListener(){}}},matchMedia:()=>({matches:true})});
+  fixture.api.getState().sessions[0].messages.push({role:'user',content:'uncommitted',createdAt:2});assert.equal(await fixture.api.persist(),false);
+  fixture.get('#input').value='do not send';await fixture.api.send();assert.equal(posts,0);assert.equal(idb.stateRecords.size,0);assert.equal(fixture.storage.get('dwell.sessions'),JSON.stringify([local]));
+  idb.options.holdOpen=false;idb.releaseOpen();for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(idb.stateRecords.get('current').sessions,JSON.stringify([local]));
+});
+
+test('ordered IndexedDB revisions keep the latest full session and previous verified revision',async()=>{
+  const local={id:'ordered',provider:'claude_tmux',messages:[{role:'user',content:'first',createdAt:1}]},fixture=await coldProductionFixture({storedSessions:[local],snapshotStatus:503});
+  fixture.api.getState().sessions[0].messages.push({role:'assistant',content:'second',createdAt:2});const first=fixture.api.persist();
+  fixture.api.getState().sessions[0].messages.push({role:'user',content:'third',createdAt:3});const second=fixture.api.persist();
+  assert.deepEqual(await Promise.all([first,second]),[true,true]);
+  assert.deepEqual(storedChatMessages(fixture).map(message=>message.content),['first','second','third']);
+  assert.deepEqual(JSON.parse(fixture.idb.stateRecords.get('previous').sessions)[0].messages.map(message=>message.content),['first','second']);
+  assert(fixture.idb.stateRecords.get('current').revision>fixture.idb.stateRecords.get('previous').revision);
+});
+
+test('a stale PWA client cannot overwrite a newer IndexedDB revision',async()=>{
+  const local={id:'shared',provider:'claude_tmux',messages:[{role:'user',content:'first',createdAt:1}]},idb=fakeIndexedDB();
+  const newer=await coldProductionFixture({storedSessions:[local],snapshotStatus:503,indexedDBFixture:idb});
+  const stale=await coldProductionFixture({storedSessions:[local],snapshotStatus:503,indexedDBFixture:idb});
+  newer.api.getState().sessions[0].messages.push({role:'assistant',content:'newer',createdAt:2});assert.equal(await newer.api.persist(),true);
+  stale.api.getState().sessions[0].messages.push({role:'assistant',content:'stale',createdAt:3});assert.equal(await stale.api.persist(),false);
+  assert.deepEqual(storedChatMessages(newer).map(message=>message.content),['first','newer']);assert.match(stale.get('#statusLine').textContent,/尚未保存/);
+});
+
+test('older backup database upgrades and an older client conflict cannot overwrite the IndexedDB primary',async()=>{
+  const local={id:'legacy',provider:'claude_tmux',messages:[{role:'user',content:'old',createdAt:1}]},idb=fakeIndexedDB();idb.stores.add('snapshots');idb.records.set('older-backup',{sessions:'[]',activeId:'',provider:'claude_tmux'});
+  const first=await coldProductionFixture({storedSessions:[local],snapshotStatus:503,indexedDBFixture:idb});assert(idb.stores.has('chat-state'));assert(idb.records.has('older-backup'));
+  first.api.getState().sessions[0].messages.push({role:'assistant',content:'new local',createdAt:2});assert.equal(await first.api.persist(),true);const before=idb.stateRecords.get('current').sessions;
+  const changed={...local,messages:[...local.messages,{role:'assistant',content:'older page edit',createdAt:3}]};
+  const reopened=await coldProductionFixture({storedSessions:[changed],snapshotStatus:503,indexedDBFixture:idb});
+  assert.equal(idb.stateRecords.get('current').sessions,before);assert.equal(reopened.storage.get('dwell.sessions'),JSON.stringify([changed]));assert.match(reopened.get('#statusLine').textContent,/尚未保存/);
+});
+
+test('local recovery diagnostic shows the cold-start result without rerunning recovery or exposing chat text',async()=>{
+  const local={id:'private-session',provider:'claude_tmux',messages:[{role:'user',content:'private anchor text',createdAt:Date.parse('2026-10-07T15:33:00Z')}]};
+  const recovered=[{role:'user',content:'private anchor text',createdAt:'2026-10-07T15:33:01Z'},{role:'assistant',content:'private reply text',createdAt:'2026-10-07T15:33:02Z'}];
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered,notification:false}),before=fixture.calls.length,panel=fixture.get('#localRecoveryDiagnosticDetails');
+  panel.hidden=true;fixture.api.openUserHub();fixture.get('#toggleLocalRecoveryDiagnostic').click();
+  assert.equal(fixture.calls.length,before);assert.equal(panel.hidden,false);assert.match(panel.textContent,/provider: claude_tmux/);assert.match(panel.textContent,/active session ID: private-…/);assert.match(panel.textContent,/IndexedDB 备份已核验: 是/);assert.match(panel.textContent,/恢复阶段: complete/);assert.match(panel.textContent,/退出原因: success/);assert.doesNotMatch(panel.textContent,/private-session|private anchor text|private reply text/);
+});
+
+test('recovery diagnostic reports status without exposing message bodies or a complete session ID',async()=>{
+  const local={id:'private-long-session-id',provider:'claude_tmux',messages:[{role:'user',content:'private anchor body',createdAt:Date.parse('2026-10-07T15:33:00Z')}]};
+  const recovered=[{role:'user',content:'private anchor body',createdAt:'2026-10-07T15:33:00Z'},{role:'assistant',content:'private reply body',createdAt:'2026-10-07T15:33:10Z'}];
+  const fixture=await coldProductionFixture({storedSessions:[local],recovered});fixture.get('#localRecoveryDiagnosticDetails').hidden=true;fixture.get('#toggleLocalRecoveryDiagnostic').click();
+  const report=fixture.get('#localRecoveryDiagnosticDetails').textContent;assert.match(report,/恢复阶段: complete/);assert.doesNotMatch(report,/private-long-session-id|private anchor body|private reply body/);
+});
 test('notification navigation repairs a stale conversation anchor, refreshes runtime, and replays the existing chat turn',async()=>{
   const handlers={},calls=[],navigator={standalone:true,onLine:true,serviceWorker:{addEventListener:(name,handler)=>{handlers[name]=handler}}};
   const fetchImpl=async url=>{calls.push(url);if(url.includes('/events?'))return new Response(JSON.stringify({turnId:'turn-1',state:'finished',receivedByRuntime:true,finished:true,recoverable:true,latestSeq:2,events:[{type:'segment_delta',turnId:'turn-1',delta:'恢复完成',seq:1},{type:'turn_done',turnId:'turn-1',seq:2}]}));return new Response(JSON.stringify({state:'connected',runtimeId:'claude-main'}),{status:200})};
@@ -195,8 +386,8 @@ test('notification resume diagnostics distinguish populated history without a re
 test('standalone cold start adopts the connected production runtime through normal status recovery',async()=>{
   const handlers={},navigator={standalone:true,onLine:true,serviceWorker:{addEventListener:(name,handler)=>{handlers[name]=handler}}};
   const fetchImpl=async url=>{assert.equal(url,'/api/runtimes/claude-tmux/status');return new Response(JSON.stringify({state:'connected',runtimeId:'production-runtime'}),{status:200})};
-  const {api,storage}=loadApp({},fetchImpl,undefined,{navigator});await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(api.getState().activeAppView,'chat');assert.equal(api.getState().activeProvider,'claude_tmux');assert.equal(api.getState().tmuxStatus.state,'connected');assert.equal(storage.get('dwell.provider'),'claude_tmux');assert.equal(JSON.parse(storage.get('dwell.profiles')).claude_tmux.runtimeId,'production-runtime');assert.equal(typeof handlers.message,'function');
+  const {api,storage,idb}=loadApp({},fetchImpl,undefined,{navigator});for(let index=0;index<8;index++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(api.getState().activeAppView,'chat');assert.equal(api.getState().activeProvider,'claude_tmux');assert.equal(api.getState().tmuxStatus.state,'connected');assert.equal(idb.stateRecords.get('current').provider,'claude_tmux');assert.equal(JSON.parse(storage.get('dwell.profiles')).claude_tmux.runtimeId,'production-runtime');assert.equal(typeof handlers.message,'function');
 });
 
 test('thought process event stays out of ordinary assistant body and shows a turn-bound cloud',()=>{const {api}=loadApp(),out={role:'assistant',content:'final',turnId:'turn-a',createdAt:1};api.applyTurnEvent(out,{type:'thought_process',turnId:'turn-a',items:[{id:'i',type:'thinking',text:'reason'}]});assert.equal(out.content,'final');const html=api.renderChatMessage(out,null);assert.match(html,/data-thought-turn="turn-a"/);assert.doesNotMatch(html,/reason/)});
@@ -462,6 +653,70 @@ test('busy Claude tmux shows A B C immediately and keeps every request independe
   streamControllers[0].enqueue(new TextEncoder().encode('{"type":"turn_done","turnId":"turn-A"}\n'));streamControllers[0].close();streamControllers[1].enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-B"}\n{"type":"turn_done","turnId":"turn-B"}\n'));streamControllers[1].close();streamControllers[2].enqueue(new TextEncoder().encode('{"type":"turn_started","turnId":"turn-C"}\n{"type":"turn_done","turnId":"turn-C"}\n'));streamControllers[2].close();await Promise.all([first,second,third]);assert.equal(api.getState().sending,false);
 });
 
+test('healthy chat stream finishes when local persistence fails', async () => {
+  const session={id:'stream-fixture',provider:'claude_tmux',title:'Fixture',messages:[]};
+  let recoveryCalls=0;
+  const events=[
+    {type:'turn_queued',clientRequestId:'request-fixture'},
+    {type:'turn_started',turnId:'turn-fixture',seq:1},
+    {type:'assistant_message',turnId:'turn-fixture',messageId:'message-fixture',source:'tool',text:'回复',seq:2},
+    {type:'thought_process',turnId:'turn-fixture',items:[{id:'thought-fixture',type:'thinking',text:'fixture'}],seq:3},
+    {type:'turn_done',turnId:'turn-fixture',seq:4}
+  ];
+  const fetchImpl=async url=>{if(url.includes('/status'))return new Response('{"state":"connected","runtimeId":"claude-main"}',{headers:{'content-type':'application/json'}});if(url!=='/api/chat'){recoveryCalls++;throw new Error('unexpected recovery')}return new Response(events.map(event=>JSON.stringify(event)).join('\n')+'\n',{headers:{'content-type':'application/x-ndjson'}})};
+  const {api,get,context}=loadApp({'dwell.provider':'claude_tmux','dwell.active':session.id,'dwell.sessions':JSON.stringify([session])},fetchImpl,{randomUUID:()=> 'request-fixture'});
+  await api.refreshRuntimeStatus();
+  vm.runInContext("openThoughtTurn='turn-fixture'",context);get('#thoughtTimeline').replaceChildren=()=>{throw new Error('Thought UI failed')};
+  context.localStorage.setItem=()=>{throw new Error('quota exceeded')};
+  get('#input').value='你好';await api.send();
+  const out=api.getState().sessions[0].messages.at(-1);
+  assert.equal(out.delivery.phase,'finished');assert.equal(out.delivery.lastAppliedSeq,4);assert.equal(out.toolMessages[0].content,'回复');assert.equal(out.pending,false);assert.equal(recoveryCalls,0);
+});
+
+test('a local event exception does not stop the NDJSON reader or start recovery', async () => {
+  const {api}=loadApp();const seen=[];
+  const response=new Response('{"type":"turn_queued"}\n{"type":"turn_started"}\n{"type":"turn_done"}\n',{headers:{'content-type':'application/x-ndjson'}});
+  await api.readTurnStream(response,{content:''},event=>{seen.push(event.type);if(event.type==='turn_queued')throw new Error('local handler failed')},()=>true);
+  assert.deepEqual(seen,['turn_queued','turn_started','turn_done']);
+});
+
+test('a local UI event failure does not turn a healthy chat into recovery', async () => {
+  const session={id:'ui-fixture',provider:'claude_tmux',title:'Fixture',messages:[]};let recoveryCalls=0;
+  const events=[{type:'turn_queued'},{type:'turn_started',turnId:'turn-ui',seq:1},{type:'assistant_message',turnId:'turn-ui',messageId:'message-ui',source:'tool',text:'回复',seq:2},{type:'turn_done',turnId:'turn-ui',seq:3}];
+  const fetchImpl=async url=>{if(url.includes('/status'))return new Response('{"state":"connected","runtimeId":"claude-main"}',{headers:{'content-type':'application/json'}});if(url!=='/api/chat'){recoveryCalls++;throw new Error('unexpected recovery')}return new Response(events.map(event=>JSON.stringify(event)).join('\n')+'\n',{headers:{'content-type':'application/x-ndjson'}})};
+  const {api,get,context}=loadApp({'dwell.provider':'claude_tmux','dwell.active':session.id,'dwell.sessions':JSON.stringify([session])},fetchImpl,{randomUUID:()=> 'request-ui'});
+  await api.refreshRuntimeStatus();context.requestAnimationFrame=()=>{throw new Error('UI scheduling failed')};
+  get('#input').value='你好';await api.send();
+  const out=api.getState().sessions[0].messages.at(-1);
+  assert.equal(out.delivery.phase,'finished');assert.equal(out.toolMessages[0].content,'回复');assert.equal(recoveryCalls,0);
+});
+
+test('malformed JSON is skipped, while consumer SyntaxError is handled as a local event failure', async () => {
+  const {api,context}=loadApp();const seen=[],warnings=[];context.console={...console,warn:(...args)=>warnings.push(args)};
+  const response=new Response('{broken\n{"type":"turn_queued"}\n{"type":"turn_started"}\n{"type":"turn_done"}\n',{headers:{'content-type':'application/x-ndjson'}});
+  await api.readTurnStream(response,{content:''},event=>{seen.push(event.type);if(event.type==='turn_queued')throw new SyntaxError('consumer failed')},()=>true);
+  assert.deepEqual(seen,['turn_queued','turn_started','turn_done']);
+  assert.equal(warnings.length,1);assert.equal(warnings[0][1],'SyntaxError');
+});
+
+test('fetch rejection still enters connection recovery', async () => {
+  const session={id:'fetch-fixture',provider:'claude_tmux',title:'Fixture',messages:[]};let recoveryCalls=0;
+  const fetchImpl=async url=>{if(url.includes('/status'))return new Response('{"state":"connected","runtimeId":"claude-main"}',{headers:{'content-type':'application/json'}});if(url==='/api/chat')throw new TypeError('Failed to fetch');if(url.startsWith('/api/chat/recovery/by-request/')){recoveryCalls++;return new Response('{"status":"EXPIRED"}',{headers:{'content-type':'application/json'}})}throw new Error('unexpected URL')};
+  const {api,get}=loadApp({'dwell.provider':'claude_tmux','dwell.active':session.id,'dwell.sessions':JSON.stringify([session])},fetchImpl,{randomUUID:()=> 'request-fetch'});
+  await api.refreshRuntimeStatus();
+  get('#input').value='你好';await api.send();
+  assert.equal(recoveryCalls,1);assert.match(api.getState().sessions[0].messages.at(-1).delivery.notice,/恢复记录已经过期/);
+});
+
+test('reader rejection still enters connection recovery', async () => {
+  const session={id:'reader-fixture',provider:'claude_tmux',title:'Fixture',messages:[]};let recoveryCalls=0;
+  const fetchImpl=async url=>{if(url.includes('/status'))return new Response('{"state":"connected","runtimeId":"claude-main"}',{headers:{'content-type':'application/json'}});if(url==='/api/chat')return {ok:true,status:200,headers:{get:()=> 'application/x-ndjson'},body:{getReader:()=>({read:async()=>{throw new Error('reader dropped')}})}};if(url.startsWith('/api/chat/recovery/by-request/')){recoveryCalls++;return new Response('{"status":"EXPIRED"}',{headers:{'content-type':'application/json'}})}throw new Error('unexpected URL')};
+  const {api,get}=loadApp({'dwell.provider':'claude_tmux','dwell.active':session.id,'dwell.sessions':JSON.stringify([session])},fetchImpl,{randomUUID:()=> 'request-reader'});
+  await api.refreshRuntimeStatus();
+  get('#input').value='你好';await api.send();
+  assert.equal(recoveryCalls,1);assert.match(api.getState().sessions[0].messages.at(-1).delivery.notice,/恢复记录已经过期/);
+});
+
 test('a successful API connection test persists the provider and refreshes composer state',async()=>{
   const fetchImpl=async url=>{assert.equal(url,'/api/test');return new Response(JSON.stringify({ok:true,model:'deepseek-v4-flash'}),{status:200,headers:{'content-type':'application/json'}})};
   const {api,get,storage}=loadApp({},fetchImpl);api.selectProvider('relay');get('#base').value='https://api.deepseek.com/v1';get('#key').value='browser-only-key';get('#model').value='deepseek-v4-flash';get('#protocol').value='chat';
@@ -525,7 +780,7 @@ test('send pointerdown keeps the focused composer in place without submitting',(
 });
 
 
-test('iOS settles viewport bursts before committing geometry or scrolling across three keyboard cycles',()=>{
+test('iOS commits viewport geometry immediately and settles across three keyboard cycles',()=>{
   const timers=new Map(),frames=[];let timerId=0;
   const vv={height:844,offsetTop:0,width:390,scale:1};
   const {api,get,rootStyles}=loadApp({},undefined,undefined,{visualViewport:vv,navigator:{userAgent:'iPhone'},setTimeout:fn=>{timers.set(++timerId,fn);return timerId},clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>frames.push(fn)});
@@ -534,15 +789,15 @@ test('iOS settles viewport bursts before committing geometry or scrolling across
   api.setViewportBottomAnchor(true);
   for(let cycle=0;cycle<3;cycle++){
     for(const finalHeight of [500,844]){
-      const before=rootStyles['--vv-bottom'];box.scrollTop=0;
+      box.scrollTop=0;
       vv.height=600;vv.offsetTop=90;api.scheduleVisualViewportSync();
       fireTimer();frames.shift()();
       vv.height=finalHeight;vv.offsetTop=0;api.scheduleVisualViewportSync();
-      frames.shift()(); // stale second frame must not commit
+      frames.shift()(); // stale second frame must not overwrite the immediate commit
       api.syncComposerHeight();
-      assert.equal(rootStyles['--vv-bottom'],before);
-      assert.equal(box.scrollTop,0);
-      fireTimer();frames.shift()();frames.shift()();frames.shift()();frames.shift()();
+      assert.equal(rootStyles['--vv-bottom'],finalHeight+'px');
+      assert.equal(box.scrollTop,800);
+      fireTimer();for(let frameCount=0;frames.length&&frameCount<6;frameCount++)frames.shift()();
       assert.equal(rootStyles['--vv-bottom'],finalHeight+'px');
       assert.equal(box.scrollTop,800);
     }
@@ -554,7 +809,7 @@ test('iOS rechecks geometry between stable frames even without another viewport 
   const vv={height:844,offsetTop:0,width:390,scale:1};
   const {api,rootStyles}=loadApp({},undefined,undefined,{visualViewport:vv,navigator:{userAgent:'iPhone'},setTimeout:fn=>{timers.set(++id,fn);return id},clearTimeout:id=>timers.delete(id),requestAnimationFrame:fn=>frames.push(fn)});
   api.scheduleVisualViewportSync();timers.get(id)();frames.shift()();vv.height=500;frames.shift()();
-  assert.equal(rootStyles['--vv-height'],'844px');
+  assert.equal(rootStyles['--vv-height'],'500px');
   timers.get(id)();frames.shift()();frames.shift()();assert.equal(rootStyles['--vv-height'],'500px');
 });
 
@@ -607,7 +862,7 @@ test('pre-turn disconnect resolves request id then replays one multi-bubble resu
   if((options?.method||'GET')==='POST'){posts++;throw new TypeError('Load failed')}throw new Error('unexpected request '+url);
  });
  api.selectProvider('claude_tmux');await api.refreshRuntimeStatus();get('#input').value='fixture';await api.send();const session=api.getState().sessions[0];
- assert.equal(posts,1);assert.equal(lookups,1);assert.equal(replays,1);assert.equal(session.messages.at(-1).toolMessages.map(message=>message.content).join('|'),'第一颗|第二颗');assert.equal(api.getState().sending,false);assert.doesNotMatch(session.messages.map(message=>message.delivery?.notice||'').join(' '),/重新发送|可能没有发出去/);
+  assert.equal(posts,1);assert.equal(lookups,1);assert.equal(replays,1);assert.equal(session.messages.at(-1).toolMessages.map(message=>message.content).join('|'),'第一颗|第二颗');assert.equal(api.getState().sending,false);assert.doesNotMatch(session.messages.map(message=>message.delivery?.notice||'').join(' '),/重新发送|可能没有发出去/);
 });
 
 for(const initialStatus of ['PENDING','NOT_FOUND'])test(`pre-turn lookup tolerates transient ${initialStatus} before FOUND`,async()=>{

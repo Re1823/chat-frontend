@@ -11,10 +11,12 @@ const presets = {
 };
 const runtimePresets={claude_tmux:{name:'Claude Code',icon:'C⌁',runtime:'claude_tmux',runtimeId:'claude-main'}};
 const providerChoices={...presets,...runtimePresets};
-let activeProvider = localStorage.getItem('dwell.provider') || 'claude';
-let profiles = JSON.parse(localStorage.getItem('dwell.profiles') || '{}');
-let sessions = JSON.parse(localStorage.getItem('dwell.sessions') || '[]');
-let activeId = localStorage.getItem('dwell.active') || '';
+let activeProvider='claude',profiles={},legacySessionsRaw='[]',sessions=[],activeId='';
+try{activeProvider=localStorage.getItem('dwell.provider')||'claude'}catch{}
+try{profiles=JSON.parse(localStorage.getItem('dwell.profiles')||'{}')}catch{}
+try{legacySessionsRaw=localStorage.getItem('dwell.sessions')||'[]'}catch{legacySessionsRaw=null}
+try{const parsed=JSON.parse(legacySessionsRaw);if(Array.isArray(parsed))sessions=parsed}catch{}
+try{activeId=localStorage.getItem('dwell.active')||''}catch{}
 const assistantProfileDefaults={name:'秋秋',subtitle:'Claude Code',introduction:'Personal assistant'};
 function readAssistantProfile(){try{const saved=JSON.parse(localStorage.getItem('dwell.assistantProfile')||'{}');return {...assistantProfileDefaults,...saved,name:String(saved.name||assistantProfileDefaults.name),introduction:String(saved.introduction||assistantProfileDefaults.introduction)}}catch{return {...assistantProfileDefaults}}}
 const assistantAvatarKey='dwell.assistantAvatar',userAvatarKey='dwell.userAvatar';
@@ -27,7 +29,18 @@ let activeRequest=null;
 const activeRequests=new Map();
 let sending = false, continuationSourceId='', activeTurnId='', tmuxStatus={state:'unknown'}, draftImages=[],pendingImageUploads=0;
 const profile = id => ({...providerChoices[id], ...(profiles[id] || {})});
-const persist = () => { localStorage.setItem('dwell.profiles',JSON.stringify(profiles)); localStorage.setItem('dwell.provider',activeProvider); localStorage.setItem('dwell.sessions',JSON.stringify(sessions)); localStorage.setItem('dwell.active',activeId); };
+const useIndexedDbChatStore=globalThis.matchMedia?.('(display-mode: standalone)')?.matches||globalThis.navigator?.standalone===true;
+let chatStoreMode=useIndexedDbChatStore?'loading':'legacy',chatStorageUnsaved=false,chatRevision=0,committedChatRecord=null,chatWriteTail=Promise.resolve();
+function showChatStorageFailure(){if(chatStorageUnsaved)return;chatStorageUnsaved=true;try{updateStatus();toast('本机聊天记录尚未保存，请保持页面打开')}catch{}}
+const persist = () => {
+  if(chatStoreMode==='loading'||chatStoreMode==='unavailable')return Promise.resolve(false);
+  if(chatStoreMode==='idb'){
+    let raw;try{raw=JSON.stringify(sessions)}catch{showChatStorageFailure();return Promise.resolve(false)}
+    if(committedChatRecord&&committedChatRecord.sessions===raw&&committedChatRecord.activeId===activeId&&committedChatRecord.provider===activeProvider&&chatRevision===committedChatRecord.revision)return Promise.resolve(true);
+    return queueChatStateWrite({sessions:raw,activeId,provider:activeProvider});
+  }
+  try{localStorage.setItem('dwell.profiles',JSON.stringify(profiles));localStorage.setItem('dwell.provider',activeProvider);localStorage.setItem('dwell.sessions',JSON.stringify(sessions));localStorage.setItem('dwell.active',activeId);chatStorageUnsaved=false;return Promise.resolve(true)}catch{showChatStorageFailure();return Promise.resolve(false)}
+};
 let toastTimer;
 function syncComposerHeight(){
   const footer=$('main>footer');
@@ -117,11 +130,12 @@ function scheduleSettledChatViewport(){
 function scheduleVisualViewportSync(){if(sendPointerActive)return;const memoryActive=activeAppView==='memory';if(!memoryActive&&isIOSViewport()){scheduleSettledChatViewport();return}const revision=++viewportRevision;if(viewportFramePending)return;viewportFramePending=true;const schedule=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));schedule(()=>{viewportFramePending=false;const committedRevision=viewportRevision;syncVisualViewport();schedule(()=>{if(committedRevision!==viewportRevision)return;if(memoryActive){const body=$('#memoryBody');if(body)body.scrollTop=Math.min(memoryState.scrollPosition,Math.max(0,body.scrollHeight-body.clientHeight))}else if(keepBottomThroughViewportResize)scrollMessagesToBottom()})})}
 const toast=t=>{const notice=$('#toast');notice.textContent=String(t);positionToast();notice.classList.add('on');clearTimeout(toastTimer);const duration=Math.min(8000,Math.max(2200,1400+notice.textContent.length*35));toastTimer=setTimeout(()=>notice.classList.remove('on'),duration)};
 function renderProviders(){ $('#providers').innerHTML=Object.entries(providerChoices).map(([id,p])=>`<button class="provider ${id===activeProvider?'on':''}" data-id="${id}" aria-pressed="${id===activeProvider}"><span>${p.icon}</span>${p.name}</button>`).join(''); $$('.provider').forEach(b=>b.onclick=()=>selectProvider(b.dataset.id)); }
-function selectProvider(id, saveCurrent=true){ if(saveCurrent)saveDraft(); activeProvider=id; const p=profile(id); const tmux=p.runtime==='claude_tmux'; $('#apiFields').hidden=tmux; $('#tmuxFields').hidden=!tmux; $('#base').value=p.base||''; $('#key').value=p.key||''; $('#model').value=p.model||''; $('#protocol').value=p.protocol||'responses'; $('#system').value=p.system||''; $('#runtimeId').value=p.runtimeId||'claude-main'; $('#testMsg').textContent=''; renderProviders(); if(tmux){const pending=refreshRuntimeStatus();if(coldResumeDiagnostic)coldResumeRuntimePromise=pending;return pending}updateStatus();return null }
+function selectProvider(id, saveCurrent=true){ if(saveCurrent)saveDraft(); activeProvider=id; const p=profile(id); const tmux=p.runtime==='claude_tmux'; $('#apiFields').hidden=tmux; $('#tmuxFields').hidden=!tmux; $('#base').value=p.base||''; $('#key').value=p.key||''; $('#model').value=p.model||''; $('#protocol').value=p.protocol||'responses'; $('#system').value=p.system||''; $('#runtimeId').value=p.runtimeId||'claude-main'; $('#testMsg').textContent=''; renderProviders(); if(tmux){const pending=refreshRuntimeStatus();coldResumeRuntimePromise=pending;return pending}updateStatus();return null }
 function saveDraft(){ if(!activeProvider)return; const p=profile(activeProvider); profiles[activeProvider]=p.runtime==='claude_tmux'?{runtime:'claude_tmux',runtimeId:$('#runtimeId').value.trim()||'claude-main'}:{base:$('#base').value.trim(),key:$('#key').value.trim(),model:$('#model').value.trim(),protocol:$('#protocol').value,system:$('#system').value.trim()}; }
+function persistProfileSettings(){if(chatStoreMode!=='idb')return true;try{const raw=JSON.stringify(profiles);localStorage.setItem('dwell.profiles',raw);if(localStorage.getItem('dwell.profiles')!==raw)throw new Error('profile_verification_failed');return true}catch{try{toast('接入设置尚未保存，请检查本机空间')}catch{}return false}}
 function openSettings(returnView='chat'){ closeSheets();settingsReturnView=returnView;selectProvider(activeProvider);refreshNotificationState();$('#settings').classList.remove('leaving');$('#shade').classList.add('on');$('#settings').classList.add('on') }
 function closeSheets(){ $('#shade').classList.remove('on'); $$('.sheet').forEach(x=>x.classList.remove('on'));const add=$('#addToChatSheet');add?.classList.remove('closing','dragging');add?.style?.removeProperty?.('--add-chat-drag');add?.setAttribute?.('aria-hidden','true');document.body.classList.remove('add-chat-open') }
-function closeTransientUI(){closeSheets();closeViewer()}
+function closeTransientUI(){closeSheets();globalThis.NonDesireUI?.closeSheet?.();closeViewer()}
 function closeSettings(){ closeConnections(); }
 const pushInstallationKey='dwell.pushInstallationId';let currentPushSubscription=null,notificationBusy=false;
 const installedPwa=()=>globalThis.matchMedia?.('(display-mode: standalone)')?.matches||globalThis.navigator?.standalone===true;
@@ -182,7 +196,7 @@ async function toggleNotifications(){
   }catch(error){setNotificationUi(error.message||'通知设置失败','重试',false)}finally{notificationBusy=false}
 }
 function configured(){ const p=profile(activeProvider); return p.runtime==='claude_tmux'?tmuxStatus.state==='connected':!!(p.key&&p.model); }
-function updateStatus(){ const p=profile(activeProvider),hasDraft=!!$('#input').value.trim()||draftImages.length>0; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=!configured()||!hasDraft||pendingImageUploads>0; $('#send').innerHTML=chatIcons.plane; $('#send').setAttribute?.('aria-label','发送'); }
+function updateStatus(){ const p=profile(activeProvider),hasDraft=!!$('#input').value.trim()||draftImages.length>0; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=chatStorageUnsaved?'本机聊天记录尚未保存':configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=chatStoreMode==='loading'||chatStoreMode==='unavailable'||!configured()||!hasDraft||pendingImageUploads>0; $('#send').innerHTML=chatIcons.plane; $('#send').setAttribute?.('aria-label','发送'); }
 async function refreshRuntimeStatus({diagnostic=false}={}){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);let httpStatus=null;
   if(diagnostic&&notificationResumeDiagnostic)notificationResumeDiagnostic.runtimeRequestExecuted=true;
@@ -194,25 +208,176 @@ async function restoreAvailableProductionRuntime({diagnostic=false}={}){
   const cold=coldResumeDiagnostic;if(!installedPwa()){if(cold)cold.restoreAvailableReason='not_standalone';return false}if(profile(activeProvider).runtime==='claude_tmux'){if(cold)cold.restoreAvailableReason='already_claude_runtime';return false}if(configured()){if(cold)cold.restoreAvailableReason='already_configured';return false}if(cold){cold.restoreAvailableEntered=true;cold.restoreAvailableReason='entered'}
   const previousProvider=activeProvider;activeProvider='claude_tmux';const status=await refreshRuntimeStatus({diagnostic});
   if(status.state!=='connected'){if(cold)cold.restoreAvailableReason='runtime_not_connected';activeProvider=previousProvider;updateStatus();return false}
-  profiles.claude_tmux={runtime:'claude_tmux',runtimeId:status.runtimeId||runtimePresets.claude_tmux.runtimeId};persist();renderProviders();renderAll(false);restoreInterruptedConnection();if(cold)cold.restoreAvailableReason='restored_provider';return true
+  profiles.claude_tmux={runtime:'claude_tmux',runtimeId:status.runtimeId||runtimePresets.claude_tmux.runtimeId};persistProfileSettings();persist();renderProviders();renderAll(false);restoreInterruptedConnection();if(cold)cold.restoreAvailableReason='restored_provider';return true
 }
 function normalizedProductionConversation(value){
-  if(!value?.available||!Array.isArray(value.messages)||!value.messages.length||value.messages.length>10000)return null;
+  if(!value?.available||value.truncated||!Array.isArray(value.messages)||!value.messages.length||value.messages.length>10000)return null;
   const messages=[];
   for(const item of value.messages){
     if(!item||!['user','assistant'].includes(item.role)||typeof item.content!=='string'||!item.content.trim()||item.content.length>16384)return null;
-    const createdAt=typeof item.createdAt==='number'||typeof item.createdAt==='string'?item.createdAt:Date.now();messages.push({role:item.role,content:item.content,createdAt});
+    const createdAt=typeof item.createdAt==='number'||typeof item.createdAt==='string'?item.createdAt:Date.now();messages.push({role:item.role,content:item.content,createdAt,...(typeof item.messageId==='string'&&item.messageId.length<=128?{messageId:item.messageId}:{})});
   }
   return messages.some(message=>message.role==='user')&&messages.some(message=>message.role==='assistant')?messages:null;
 }
-async function restoreColdProductionConversation(){
-  const cold=coldResumeDiagnostic;if(!cold||!installedPwa()||cold.storedSessionsCount!==0||current()||tmuxStatus.state!=='connected')return false;
+let localRecoveryDiagnostic={stage:'not_started',reason:'not_started',last3Matches:null,backupErrorName:'',backupFailureOperation:'',backupVerified:false};
+function noteLocalRecovery(stage,reason,last3Matches){try{localRecoveryDiagnostic={...localRecoveryDiagnostic,stage,reason,last3Matches:last3Matches===undefined?localRecoveryDiagnostic.last3Matches:last3Matches,...(stage==='precheck'&&reason==='started'?{backupErrorName:'',backupFailureOperation:'',backupVerified:false}:{})}}catch{}}
+function noteBackupException(error,operation){try{const name=error?.name;localRecoveryDiagnostic.backupErrorName=['QuotaExceededError','SecurityError','InvalidStateError','NotAllowedError','UnknownError','AbortError','ConstraintError','TypeError','RangeError','SyntaxError','Error'].includes(name)?name:'OtherError';localRecoveryDiagnostic.backupFailureOperation=['construct','getItem','idb_open','idb_write','idb_commit','idb_read','idb_verify'].includes(operation)?operation:'unknown'}catch{}}
+function showLocalRecoveryDiagnostic(){
   try{
-    const response=await fetch('/api/runtimes/claude-tmux/production-conversation',{credentials:'same-origin',cache:'no-store'});if(!response.ok)return false;
-    const messages=normalizedProductionConversation(await response.json());if(!messages||current()||sessions.length)return false;
-    const firstUser=messages.find(message=>message.role==='user'),session={id:generateId(),title:String(firstUser?.content||'恢复的对话').trim().slice(0,22)||'恢复的对话',provider:'claude_tmux',created:new Date(messages[0].createdAt).getTime()||Date.now(),messages};
-    sessions.unshift(session);activeId=session.id;activeProvider='claude_tmux';profiles.claude_tmux={runtime:'claude_tmux',runtimeId:tmuxStatus.runtimeId||runtimePresets.claude_tmux.runtimeId};persist();renderProviders();renderAll();restoreInterruptedConnection();return true;
-  }catch{return false}
+    const panel=$('#localRecoveryDiagnosticDetails'),session=current(),tail=session?.messages?.slice(-3)||[];
+    const flags=localRecoveryDiagnostic.last3Matches,aligned=flags?.sessionTag===session?.id?.slice(0,8)&&flags?.messageCount===session?.messages?.length;
+    const rows=[`provider: ${activeProvider}`,`active session ID: ${activeId?activeId.slice(0,8)+'…':'无'}`,`IndexedDB 备份已核验: ${localRecoveryDiagnostic.backupVerified?'是':'否'}`,`恢复阶段: ${localRecoveryDiagnostic.stage}`,`退出原因: ${localRecoveryDiagnostic.reason}`,`备份异常名: ${localRecoveryDiagnostic.backupErrorName||'无'}`,`备份失败操作: ${localRecoveryDiagnostic.backupFailureOperation||'无'}`];
+    tail.forEach((message,index)=>rows.push(`末尾 ${tail.length-index}: ${message?.role||'未知'} · ${message?.createdAt??'无时间'} · projection 匹配: ${aligned?(flags.values[index]?'是':'否'):'未校验'}`));
+    panel.textContent=rows.join('\n');
+  }catch{try{$('#localRecoveryDiagnosticDetails').textContent='本机诊断暂时无法读取'}catch{}}
+}
+async function openChatDatabase(){
+  const request=globalThis.indexedDB?.open('dwell-production-conversation-backups',2);
+  if(!request)throw new Error('indexeddb_unavailable');
+  return await new Promise((resolve,reject)=>{
+    request.onupgradeneeded=()=>{try{if(!request.result.objectStoreNames.contains('snapshots'))request.result.createObjectStore('snapshots');if(!request.result.objectStoreNames.contains('chat-state'))request.result.createObjectStore('chat-state')}catch(error){reject(error)}};
+    request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error||new Error('indexeddb_open_failed'));request.onblocked=()=>reject(new Error('indexeddb_blocked'));
+  });
+}
+async function verifiedProductionConversationBackup(key,backup,onOperation){
+  const db=await openChatDatabase();
+  try{
+    onOperation('idb_write');
+    await new Promise((resolve,reject)=>{
+      const transaction=db.transaction('snapshots','readwrite');
+      transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||new Error('indexeddb_write_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('indexeddb_write_failed'));
+      transaction.objectStore('snapshots').add(backup,key);onOperation('idb_commit');
+    });
+    onOperation('idb_read');
+    return await new Promise((resolve,reject)=>{
+      const transaction=db.transaction('snapshots','readonly'),read=transaction.objectStore('snapshots').get(key);
+      transaction.oncomplete=()=>resolve(read.result);transaction.onabort=()=>reject(transaction.error||new Error('indexeddb_read_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('indexeddb_read_failed'));
+    });
+  }finally{db.close()}
+}
+function validChatRecord(value){
+  if(!value||Object.keys(value).sort().join(',')!=='activeId,backupKey,provider,revision,sessions,version'||value.version!==1||!Number.isSafeInteger(value.revision)||value.revision<0||typeof value.sessions!=='string'||typeof value.activeId!=='string'||typeof value.provider!=='string'||typeof value.backupKey!=='string')return false;
+  try{return Array.isArray(JSON.parse(value.sessions))}catch{return false}
+}
+async function readLegacyBackup(key){
+  const db=await openChatDatabase();
+  try{return await new Promise((resolve,reject)=>{
+    const transaction=db.transaction('snapshots','readonly'),read=transaction.objectStore('snapshots').get(key);
+    transaction.oncomplete=()=>resolve(read.result);transaction.onabort=()=>reject(transaction.error||new Error('legacy_backup_read_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('legacy_backup_read_failed'));
+  })}finally{db.close()}
+}
+async function readChatStateRecords(){
+  const db=await openChatDatabase();
+  try{return await new Promise((resolve,reject)=>{
+    const transaction=db.transaction('chat-state','readonly'),store=transaction.objectStore('chat-state'),currentRequest=store.get('current'),previousRequest=store.get('previous'),verifiedRequest=store.get('verifiedRevision');
+    transaction.oncomplete=()=>resolve({current:currentRequest.result,previous:previousRequest.result,verifiedRevision:verifiedRequest.result});transaction.onabort=()=>reject(transaction.error||new Error('chat_state_read_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('chat_state_read_failed'));
+  })}finally{db.close()}
+}
+async function commitChatStateRecord(record,previous){
+  const db=await openChatDatabase();
+  try{
+    await new Promise((resolve,reject)=>{
+      const transaction=db.transaction('chat-state','readwrite'),store=transaction.objectStore('chat-state');
+      transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||new Error('chat_state_write_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('chat_state_write_failed'));
+      const current=store.get('current');current.onsuccess=()=>{
+        const found=current.result;
+        if(previous?(!validChatRecord(found)||Object.keys(previous).some(key=>found[key]!==previous[key])):found!==undefined){transaction.abort();return}
+        if(previous)store.put(previous,'previous');store.put(record,'current');
+      };
+    });
+  }finally{db.close()}
+  const saved=await readChatStateRecords();
+  if(!validChatRecord(saved.current)||Object.keys(record).some(key=>saved.current[key]!==record[key])||previous&&(!validChatRecord(saved.previous)||Object.keys(previous).some(key=>saved.previous[key]!==previous[key])))throw new Error('chat_state_verification_failed');
+  const pointerDb=await openChatDatabase();
+  try{await new Promise((resolve,reject)=>{
+    const transaction=pointerDb.transaction('chat-state','readwrite');transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||new Error('chat_state_pointer_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('chat_state_pointer_failed'));transaction.objectStore('chat-state').put(record.revision,'verifiedRevision');
+  })}finally{pointerDb.close()}
+  if((await readChatStateRecords()).verifiedRevision!==record.revision)throw new Error('chat_state_pointer_verification_failed');
+}
+function queueChatStateWrite(value,{expectedRevision=null}={}){
+  const record={version:1,revision:++chatRevision,backupKey:committedChatRecord.backupKey,...value};
+  const write=chatWriteTail.then(async()=>{
+    if(expectedRevision!==null&&chatRevision!==record.revision)throw new Error('chat_state_changed');
+    await commitChatStateRecord(record,committedChatRecord);
+    committedChatRecord=record;return true;
+  });
+  chatWriteTail=write.catch(()=>{});
+  return write.then(()=>{if(chatRevision===record.revision){chatStorageUnsaved=false;try{updateStatus()}catch{}}return true},()=>{showChatStorageFailure();return false});
+}
+async function initializeChatStorage(){
+  if(!useIndexedDbChatStore)return true;
+  try{
+    const stored=await readChatStateRecords();
+    if(stored.current!==undefined||stored.previous!==undefined){
+      const record=validChatRecord(stored.current)&&stored.current.revision===stored.verifiedRevision?stored.current:validChatRecord(stored.previous)&&stored.previous.revision===stored.verifiedRevision?stored.previous:null;
+      if(!record)throw new Error('chat_state_invalid');
+      const backup=await readLegacyBackup(record.backupKey);
+      if(!backup||Object.keys(backup).sort().join(',')!=='activeId,provider,sessions'||(localStorage.getItem('dwell.sessions')||'[]')!==backup.sessions||localStorage.getItem('dwell.active')!==backup.activeId||localStorage.getItem('dwell.provider')!==backup.provider)throw new Error('legacy_snapshot_changed');
+      sessions=JSON.parse(record.sessions);activeId=record.activeId;activeProvider=record.provider;chatRevision=record.revision;committedChatRecord=record;chatStoreMode='idb';
+      if(record!==stored.current){chatStoreMode='unavailable';showChatStorageFailure()}
+      return true;
+    }
+    if(!Array.isArray(JSON.parse(legacySessionsRaw)))throw new Error('legacy_sessions_invalid');
+    const legacyActive=localStorage.getItem('dwell.active'),legacyProvider=localStorage.getItem('dwell.provider');
+    const backup={sessions:legacySessionsRaw,activeId:legacyActive,provider:legacyProvider};
+    const backupKey=`dwell.sessions.backup-before-projection.${Date.now()}.${generateId()}`;
+    const saved=await verifiedProductionConversationBackup(backupKey,backup,()=>{});
+    if(!saved||Object.keys(saved).sort().join(',')!=='activeId,provider,sessions'||saved.sessions!==backup.sessions||saved.activeId!==backup.activeId||saved.provider!==backup.provider)throw new Error('legacy_backup_verification_failed');
+    if(localStorage.getItem('dwell.sessions')!==legacySessionsRaw&&!(legacySessionsRaw==='[]'&&localStorage.getItem('dwell.sessions')===null)||localStorage.getItem('dwell.active')!==legacyActive||localStorage.getItem('dwell.provider')!==legacyProvider)throw new Error('legacy_storage_changed');
+    const initial={version:1,revision:0,backupKey,sessions:legacySessionsRaw,activeId:legacyActive||'',provider:legacyProvider||'claude'};
+    await commitChatStateRecord(initial,null);sessions=JSON.parse(legacySessionsRaw);activeId=initial.activeId;activeProvider=initial.provider;committedChatRecord=initial;chatRevision=0;chatStoreMode='idb';return true;
+  }catch{chatStoreMode='unavailable';showChatStorageFailure();return false}
+}
+async function restoreColdProductionConversation(){
+  noteLocalRecovery('precheck','started',null);
+  await chatWriteTail;
+  if(chatStoreMode!=='idb'||chatStorageUnsaved){noteLocalRecovery('precheck','storage_unavailable');return false}
+  if(!installedPwa()){noteLocalRecovery('precheck','not_standalone');return false}
+  if(tmuxStatus.state!=='connected'){noteLocalRecovery('precheck','runtime_not_connected');return false}
+  if(activeRequests.size){noteLocalRecovery('precheck','active_request');return false}
+  const selected=current();if(selected&&profile(selected.provider).runtime!=='claude_tmux'){noteLocalRecovery('precheck','current_not_claude');return false}
+  if(sessions.length&&!selected){noteLocalRecovery('precheck','no_selected_session');return false}
+  const originalRecord=committedChatRecord,originalRaw=originalRecord.sessions,originalRevision=chatRevision;
+  if(originalRaw!==JSON.stringify(sessions)){noteLocalRecovery('precheck','storage_mismatch');return false}
+  let step='projection_fetch',backupOperation='construct';noteLocalRecovery(step,'pending');
+  try{
+    const response=await fetch('/api/runtimes/claude-tmux/production-conversation',{credentials:'same-origin',cache:'no-store'});if(!response.ok){noteLocalRecovery(step,'projection_http_error');return false}
+    const messages=normalizedProductionConversation(await response.json());if(!messages){noteLocalRecovery(step,'projection_unavailable');return false}
+    if(activeRequests.size||committedChatRecord!==originalRecord||chatRevision!==originalRevision||JSON.stringify(sessions)!==originalRaw||current()!==selected){noteLocalRecovery(step,'state_changed');return false}
+    step='matching';noteLocalRecovery(step,'pending');
+    if(selected){try{const tail=selected.messages.slice(-3);noteLocalRecovery(step,'pending',{sessionTag:selected.id?.slice(0,8),messageCount:selected.messages.length,values:tail.map(local=>{const tool=local?.role==='assistant'?[...(local.toolMessages||[])].reverse().find(item=>String(item.content||'').trim()):null,text=String(tool?.content||local?.content||'').trim(),time=new Date(tool?.createdAt||local?.createdAt).getTime(),id=tool?.id||local?.messageId||local?.id;return messages.some(message=>message.role===local?.role&&(id&&message.messageId?id===message.messageId:message.content.trim()===text&&Number.isFinite(time)&&Math.abs(new Date(message.createdAt).getTime()-time)<=120000))})})}catch{}}
+    let mergedSessions,mergedActiveId=activeId;
+    if(selected){
+      const local=[...selected.messages].reverse().find(message=>message?.role==='user'&&String(message.content||'').trim()||message?.role==='assistant'&&(message.toolMessages?.some(item=>String(item.content||'').trim())||String(message.content||'').trim()));
+      if(!local){noteLocalRecovery(step,'anchor_missing');return false}
+      const tool=local.role==='assistant'?[...(local.toolMessages||[])].reverse().find(item=>String(item.content||'').trim()):null;
+      const localText=String(tool?.content||local.content||'').trim(),localTime=new Date(tool?.createdAt||local.createdAt).getTime(),localId=tool?.id||local.messageId||local.id||null;
+      if(!Number.isFinite(localTime)||!localText){noteLocalRecovery(step,'anchor_invalid');return false}
+      const matches=messages.map((message,index)=>({message,index})).filter(({message})=>{
+        if(message.role!==local.role)return false;
+        if(localId&&message.messageId)return localId===message.messageId;
+        const time=new Date(message.createdAt).getTime();return message.content.trim()===localText&&Number.isFinite(time)&&Math.abs(time-localTime)<=120000;
+      });
+      if(matches.length!==1){noteLocalRecovery(step,matches.length?'anchor_ambiguous':'anchor_unmatched');return false}
+      const anchor=matches[0].index,missing=messages.slice(anchor+1);
+      if(!missing.length){noteLocalRecovery(step,'already_complete');return false}
+      if(missing.some((message,index)=>!Number.isFinite(new Date(message.createdAt).getTime())||new Date(message.createdAt).getTime()<new Date(messages[anchor+index].createdAt).getTime())){noteLocalRecovery(step,'projection_time_invalid');return false}
+      for(const other of sessions){if(other===selected||profile(other.provider).runtime!=='claude_tmux')continue;const last=other.messages?.at(-1);if(last&&new Date(last.createdAt).getTime()>localTime+120000){noteLocalRecovery(step,'other_session_newer');return false}}
+      mergedSessions=sessions.map(session=>session===selected?{...session,messages:[...session.messages,...missing]}:session);
+    }else{
+      const firstUser=messages.find(message=>message.role==='user'),session={id:generateId(),title:String(firstUser?.content||'恢复的对话').trim().slice(0,22)||'恢复的对话',provider:'claude_tmux',created:new Date(messages[0].createdAt).getTime()||Date.now(),messages};
+      mergedSessions=[session];mergedActiveId=session.id;
+    }
+    step='backup';noteLocalRecovery(step,'pending');
+    backupOperation='idb_read';const stored=await readChatStateRecords(),saved=stored.current;
+    backupOperation='idb_verify';if(!validChatRecord(saved)||stored.verifiedRevision!==originalRecord.revision||Object.keys(originalRecord).some(key=>saved[key]!==originalRecord[key])){noteLocalRecovery(step,'backup_verification_failed');return false}
+    try{localRecoveryDiagnostic.backupVerified=true}catch{}
+    if(committedChatRecord!==originalRecord||chatRevision!==originalRevision||JSON.stringify(sessions)!==originalRaw||current()!==selected||activeRequests.size){noteLocalRecovery(step,'state_changed');return false}
+    step='save';noteLocalRecovery(step,'pending');
+    const mergedRaw=JSON.stringify(mergedSessions),mergedProvider=selected?activeProvider:'claude_tmux';if(!await queueChatStateWrite({sessions:mergedRaw,activeId:mergedActiveId,provider:mergedProvider},{expectedRevision:originalRevision})){noteLocalRecovery(step,'save_failed');return false}
+    if(chatRevision!==originalRevision+1){noteLocalRecovery(step,'state_changed');return false}
+    step='render';sessions=mergedSessions;activeId=mergedActiveId;if(!selected){activeProvider='claude_tmux';profiles.claude_tmux={runtime:'claude_tmux',runtimeId:tmuxStatus.runtimeId||runtimePresets.claude_tmux.runtimeId};renderProviders()}renderAll();restoreInterruptedConnection();noteLocalRecovery('complete','success');return true;
+  }catch(error){if(step==='backup')noteBackupException(error,backupOperation);noteLocalRecovery(step,step==='backup'?'backup_failed':step==='save'?'save_failed':step==='projection_fetch'?'projection_failed':step==='render'?'render_failed':'matching_failed');return false}
 }
 function current(){ return sessions.find(s=>s.id===activeId); }
 function restoreStoredConversation(){
@@ -438,7 +603,8 @@ function applyMemoryFilters(){memoryState.secondaryFilters={status:$('#memorySta
 function clearMemoryFilters(){memoryState.secondaryFilters={status:'all',domain:'',tag:''};$('#memoryStatusFilter').value='all';$('#memoryDomainFilter').value='';$('#memoryTagFilter').value='';updateMemoryCounts()}
 function closeMemoryDetail(){memoryState.selectedBucketId='';closeSheets()}
 function hideProfilePages(){['#assistantPage','#assistantEditPage','#userHubPage','#userProfilePage','#userProfileEditPage'].forEach(id=>$(id).hidden=true)}
-function showMemory(){closeTransientUI();hidePhotos();activeAppView='memory';hideProfilePages();$('main>header.chat-floating').hidden=false;$('#messages').hidden=false;$('main>footer').hidden=false;$('#memoryPage').hidden=false;$('main').classList.remove('assistant-mode');$('main').classList.add('memory-mode');$('#chatNav').classList.remove('active');$('#memoryNav').classList.add('active');$('aside').classList.remove('on');$('#memorySearch').value=memoryState.searchQuery;$('#memorySort').value=memoryState.sortMode;const schedule=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));schedule(()=>{$('#memoryBody').scrollTop=memoryState.scrollPosition});if(!memoryLoaded)loadMemoryDashboard();else renderMemoryList();scheduleVisualViewportSync()}
+function showMindView(view){const memory=view==='memory';$('#memoryPage').hidden=!memory;$('#desirePage').hidden=memory;$('#mindBottomNav').hidden=false;$('#mindStrataTab').classList.toggle('active',!memory);$('#mindMemoryTab').classList.toggle('active',memory);$('#mindStrataTab').setAttribute('aria-current',memory?'false':'page');$('#mindMemoryTab').setAttribute('aria-current',memory?'page':'false');if(memory){$('#memorySearch').value=memoryState.searchQuery;$('#memorySort').value=memoryState.sortMode;const schedule=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));schedule(()=>{$('#memoryBody').scrollTop=memoryState.scrollPosition});if(!memoryLoaded)loadMemoryDashboard();else renderMemoryList()}else{globalThis.NonDesireUI?.load?.()}scheduleVisualViewportSync()}
+function showMemory(){closeTransientUI();hidePhotos();activeAppView='memory';hideProfilePages();$('main>header.chat-floating').hidden=false;$('#messages').hidden=false;$('main>footer').hidden=false;$('main').classList.remove('assistant-mode');$('main').classList.add('memory-mode');$('#chatNav').classList.remove('active');$('#memoryNav').classList.add('active');$('aside').classList.remove('on');showMindView('desire')}
 function showChat(){memoryState.scrollPosition=$('#memoryBody')?.scrollTop||memoryState.scrollPosition;closeTransientUI();hidePhotos();activeAppView='chat';$('#memoryPage').hidden=true;hideProfilePages();$('main>header.chat-floating').hidden=false;$('#messages').hidden=false;$('main>footer').hidden=false;$('main').classList.remove('memory-mode');$('main').classList.remove('assistant-mode');$('#memoryNav').classList.remove('active');$('#chatNav').classList.add('active');$('aside').classList.remove('on');renderAll(false);scheduleVisualViewportSync()}
 async function restoreMainChatFromNavigation(){
   const diagnostic=beginNotificationResumeDiagnostic(),activeBefore=current();diagnostic.sessionsCount=sessions.length;diagnostic.claudeRuntimeSessionCount=sessions.filter(session=>profile(session.provider).runtime==='claude_tmux').length;diagnostic.activeIdPresent=Boolean(activeId);diagnostic.activeIdValid=Boolean(activeBefore);
@@ -481,7 +647,7 @@ function applyTurnEvent(out,event){
     if(!out.toolMessages.some(item=>item.id===event.messageId))out.toolMessages.push({id:event.messageId,role:'assistant',content:event.text,images:safeMessageImages(event.images),source:'tool',turnId:out.turnId,createdAt:out.createdAt});
   }
   if(event.type==='album_saved'&&event.turnId===out.turnId){const saved=safeAlbumSaved(event);if(saved){out.albumEvents??=[];if(!out.albumEvents.some(item=>item.photo?.photoId===saved.photo.photoId))out.albumEvents.push(saved);persist()}}
-  if(event.type==='thought_process'&&event.turnId===out.turnId){out.thoughtProcess={turnId:event.turnId,hasThoughtProcess:!!event.items?.length,items:Array.isArray(event.items)?event.items:[]};persist();if(openThoughtTurn===event.turnId)renderThoughtSheet(out.thoughtProcess)}
+  if(event.type==='thought_process'&&event.turnId===out.turnId){out.thoughtProcess={turnId:event.turnId,hasThoughtProcess:!!event.items?.length,items:Array.isArray(event.items)?event.items:[]};persist();if(openThoughtTurn===event.turnId)try{renderThoughtSheet(out.thoughtProcess)}catch{}}
   if(event.type==='segment_delta'||(!event.type&&event.delta)){out.content+=event.delta||'';out.bodyComplete=false;}
   if(['segment_done','turn_done','turn_stopped','turn_error'].includes(event.type))out.bodyComplete=true;
   if(event.type==='turn_stopped')out.stopped=true;
@@ -524,23 +690,25 @@ function createStreamingView(out,initialFollow=keepBottomThroughViewportResize||
   const flush=()=>{
     framePending=false;frameHandle=0;if(!dirty)return;dirty=false;
     if(!out.toolMessages?.length&&!currentText()&&ordinaryAssistantPresentationText(out.content).trim())structuralDirty=true;
-    if(structuralDirty){structuralDirty=false;if(current()?.messages.includes(out))renderMessages(false)}
+    try{if(structuralDirty){structuralDirty=false;if(current()?.messages.includes(out))renderMessages(false)}
     if(!out.toolMessages?.length){const text=currentText();if(text)text.textContent=ordinaryAssistantPresentationText(out.content)}
-    if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom();
+    if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom()}catch{}
   };
   box.classList.add('streaming');box.addEventListener?.('scroll',onScroll,{passive:true});
   return {
     update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(['assistant_message','thought_process','album_saved'].includes(event.type))structuralDirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
-    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;if(reveal&&current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom()}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
+    finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;try{if(reveal&&current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom()}}catch{}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
     isFollowing:()=>follow
   };
 }
 async function readTurnStream(response,out,onEvent=()=>{},applyEvent=event=>{applyTurnEvent(out,event);return true},onStream=()=>{}){
-  const reader=response.body.getReader(),dec=new TextDecoder();onStream('stream_reader_created');
+  let reader;
+  try{reader=response.body.getReader()}catch(error){if(error&&typeof error==='object'){error.chatTransportFailure=true;throw error}const failure=new Error(String(error));failure.chatTransportFailure=true;throw failure}
+  const dec=new TextDecoder();try{onStream('stream_reader_created')}catch{}
   let buf='',firstData=false;const ndjson=(response.headers.get('content-type')||'').includes('application/x-ndjson');let terminalSeen=false;
   const consume=event=>{if(['turn_done','turn_stopped','turn_error'].includes(event.type))terminalSeen=true;const applied=applyEvent(event);if(applied!==false)onEvent(event);return applied};
-  while(true){const {done,value}=await reader.read();if(!firstData&&value?.byteLength){firstData=true;onStream('stream_first_data')}buf+=dec.decode(value||new Uint8Array(),{stream:!done});const parts=ndjson?buf.split('\n'):buf.split('\n\n');buf=parts.pop()||'';for(const part of parts){const raw=ndjson?part.trim():(part.split('\n').find(x=>x.startsWith('data:'))||'').slice(5).trim();if(!raw)continue;try{const event=JSON.parse(raw);consume(event);if(['turn_done','turn_stopped'].includes(event.type)){try{await reader.cancel?.()}catch{}return}}catch(e){if(e instanceof SyntaxError)continue;throw e}}if(done)break}
-  if(buf.trim()){try{consume(JSON.parse(ndjson?buf.trim():buf.replace(/^data:\s*/,'')))}catch(e){if(!(e instanceof SyntaxError))throw e}}if(ndjson&&!terminalSeen)throw new Error('connection_interrupted')
+  while(true){let chunk;try{chunk=await reader.read()}catch(error){if(error&&typeof error==='object'){error.chatTransportFailure=true;throw error}const failure=new Error(String(error));failure.chatTransportFailure=true;throw failure}const {done,value}=chunk;if(!firstData&&value?.byteLength){firstData=true;try{onStream('stream_first_data')}catch{}}buf+=dec.decode(value||new Uint8Array(),{stream:!done});const parts=ndjson?buf.split('\n'):buf.split('\n\n');buf=parts.pop()||'';for(const part of parts){const raw=ndjson?part.trim():(part.split('\n').find(x=>x.startsWith('data:'))||'').slice(5).trim();if(!raw)continue;let event;try{event=JSON.parse(raw)}catch(e){if(e instanceof SyntaxError)continue;throw e}try{consume(event)}catch(e){if(e?.turnError)throw e;console.warn?.('[dwell stream event]',e?.name||'Error')}if(['turn_done','turn_stopped'].includes(event.type)){try{await reader.cancel?.()}catch{}return}}if(done)break}
+  if(buf.trim()){let event;try{event=JSON.parse(ndjson?buf.trim():buf.replace(/^data:\s*/,''))}catch(e){if(!(e instanceof SyntaxError))throw e}if(event)try{consume(event)}catch(e){if(e?.turnError)throw e;console.warn?.('[dwell stream event]',e?.name||'Error')}}if(ndjson&&!terminalSeen){const error=new Error('connection_interrupted');error.chatTransportFailure=true;throw error}
 }
 function connectionMarkup(message){
   const d=message.delivery;if(!d?.notice)return '';
@@ -570,7 +738,7 @@ function recordChatSendDiagnostic(event,request,{status,error,hadTurn}={}){
   if(Number.isInteger(status))entry.status=status;
   if(typeof hadTurn==='boolean')entry.hadTurn=hadTurn;
   if(error)Object.assign(entry,safeChatSendError(error));
-  connectionLog(event,request,entry);
+  try{connectionLog(event,request,entry)}catch{}
   try{
     const storage=globalThis.sessionStorage;if(!storage)return;
     const previous=JSON.parse(storage.getItem(chatSendDiagnosticKey)||'[]'),records=Array.isArray(previous)?previous:[];
@@ -601,7 +769,7 @@ function applyRequestEvent(request,event){
   return true;
 }
 function requestIsActive(request){return !!request&&activeRequests.get(request.clientRequestId)===request}
-function registerRequest(request){activeRequests.set(request.clientRequestId,request);activeRequest=request;sending=true;updateStatus()}
+function registerRequest(request){activeRequests.set(request.clientRequestId,request);activeRequest=request;sending=true;try{updateStatus()}catch{}}
 function latestActiveRequest(){return [...activeRequests.values()].at(-1)||null}
 function ensureAssistantPresentationPosition(request){if(request.presented)return;const session=sessions.find(value=>value.id===request.sessionId),index=session?.messages.indexOf(request.out)??-1;if(index<0)return;session.messages.splice(index,1);request.out.createdAt=Date.now();session.messages.push(request.out);request.presented=true}
 function scheduleRecovery(request){if(!requestIsActive(request)||request.phase!=='connection_lost')return;clearTimeout(request.recoveryTimer);request.recoveryTimer=setTimeout(()=>recoverConnection(request),1500)}
@@ -677,14 +845,14 @@ function finishGenerating(request,stopped=false){
   request.out.pending=false;
   if(stopped){request.phase='finished';request.stopped=true;request.out.stopped=true;request.out.pending=false;if(request.out.delivery)request.out.delivery.notice='已停止'}
   if(request.out.content||request.out.toolMessages?.length||request.out.albumEvents?.length||request.out.thoughtProcess?.items?.length)ensureAssistantPresentationPosition(request);
-  request.view?.finish();request.finished=true;saveDelivery(request,request.out.delivery?.notice||'');
+  try{request.view?.finish()}catch{}request.finished=true;saveDelivery(request,request.out.delivery?.notice||'');
   activeRequests.delete(request.clientRequestId);activeRequest=latestActiveRequest();sending=activeRequests.size>0;activeTurnId=[...activeRequests.values()].find(value=>value.turnId)?.turnId||'';
-  persist();renderSessions();updateStatus();
+  persist();try{renderSessions();updateStatus()}catch{}
 }
-async function send(){ const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=keepBottomThroughViewportResize||messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];renderAttachmentDraft();autoSize(); persist();renderAll(followStream); const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);recordChatSendDiagnostic('send_attempt',request);
+async function send(){ if(chatStoreMode==='loading'||chatStoreMode==='unavailable')return toast('本机聊天记录尚未就绪，请稍后再试');const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=keepBottomThroughViewportResize||messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];try{renderAttachmentDraft();autoSize()}catch{}persist();try{renderAll(followStream)}catch{}const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);recordChatSendDiagnostic('send_attempt',request);
   const p=profile(activeProvider); const apiMessages=[]; if(p.system)apiMessages.push({role:'system',content:p.system}); if(s.bridge)apiMessages.push({role:'system',content:`以下是从上一段会话提炼、由用户确认的续窗启动包。把它作为背景，不要声称看过未包含的旧会话。\n\n${s.bridge}`}); apiMessages.push(...s.messages.filter(m=>!m.pending).map(({role,content})=>({role,content})));
   const requestMessages=p.runtime==='claude_tmux'?[{role:'user',content:text}]:apiMessages;
-  const out=request.out,streamView=createStreamingView(out,followStream);request.view=streamView;saveDelivery(request);connectionLog('fetch_opened',request);
+  const out=request.out;let streamView=null;try{streamView=createStreamingView(out,followStream)}catch{}request.view=streamView;saveDelivery(request);try{connectionLog('fetch_opened',request)}catch{}
   let fetchInFlight=false;
   try{
     const body=JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)});
@@ -692,9 +860,9 @@ async function send(){ const text=$('#input').value.trim(),images=safeMessageIma
     const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body,signal:request.controller.signal});
     fetchInFlight=false;request.lastHttpStatus=r.status;recordChatSendDiagnostic('fetch_resolved',request,{status:r.status});
     if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))}
-    connectionLog('stream_opened',request);
-    await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event),event=>recordChatSendDiagnostic(event,request,{status:r.status}));
-  }catch(e){if(fetchInFlight)recordChatSendDiagnostic('fetch_rejected',request,{error:e});out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);renderAttachmentDraft()}await handleConnectionLoss(request,e)}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
+    try{connectionLog('stream_opened',request)}catch{}
+    await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView?.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event),event=>recordChatSendDiagnostic(event,request,{status:r.status}));
+  }catch(e){if(fetchInFlight)recordChatSendDiagnostic('fetch_rejected',request,{error:e});out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);try{renderAttachmentDraft()}catch{}}if(fetchInFlight||e?.chatTransportFailure)await handleConnectionLoss(request,e);else if(e?.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。')}else console.warn?.('[dwell chat local]',e?.name||'Error')}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
 async function triggerSend(){try{await send()}catch(e){toast('网络刚刚断了一下，请稍后再试。')}}
 function preserveComposerFocusOnSend(event){sendPointerActive=true;clearTimeout(sendPointerTimer);sendPointerTimer=setTimeout(()=>{sendPointerActive=false;scheduleVisualViewportSync()},450);if(document.activeElement===$('#input'))event.preventDefault()}
 function autoSize(){const t=$('#input');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';updateStatus();if($('#toast').classList.contains?.('on'))positionToast()}
@@ -703,15 +871,16 @@ $('#notificationsButton').onclick=toggleNotifications;
 $('#attachImage').onclick=openAddToChat;$('#attachmentInput').onchange=uploadImages;$('#fileInput').onchange=uploadImages;$('#cameraInput').onchange=uploadImages;
 $('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=null; $('#emojiButton').onclick=()=>{}; $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
 $('#input').onfocus=()=>{if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',()=>{noteTimelineUserScroll();cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('wheel',event=>{noteTimelineUserScroll();if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('scroll',()=>{if(timelineUserScrollIntent&&messagesNearBottom())setViewportBottomAnchor(true)},{passive:true});$('#messages').addEventListener?.('load',event=>{if(event.target?.tagName==='IMG'&&keepBottomThroughViewportResize)scheduleTimelineBottom()},true);
-$('#chatNav').onclick=showChat;$('#memoryNav').onclick=showMemory;$('#memoryMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#closeMemoryDetail').onclick=closeMemoryDetail;$('#openMemoryFilter').onclick=openMemoryFilters;$('#closeMemoryFilter').onclick=closeSheets;$('#applyMemoryFilter').onclick=applyMemoryFilters;$('#clearMemoryFilter').onclick=clearMemoryFilters;$$('#memoryFilters button').forEach(button=>button.onclick=()=>{memoryState.activePrimaryFilter=button.dataset.filter;$$('#memoryFilters button').forEach(item=>item.classList.toggle('on',item===button));renderMemoryList()});$('#memorySort').onchange=event=>{memoryState.sortMode=event.target.value;renderMemoryList()};$('#memorySearch').oninput=event=>{memoryState.searchQuery=event.target.value;clearTimeout(memorySearchTimer);memorySearchTimer=setTimeout(()=>searchMemory(event.target.value),300)};
+$('#chatNav').onclick=showChat;$('#memoryNav').onclick=showMemory;$('#mindStrataTab').onclick=()=>showMindView('desire');$('#mindMemoryTab').onclick=()=>showMindView('memory');$('#memoryMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#desireMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#closeMemoryDetail').onclick=closeMemoryDetail;$('#openMemoryFilter').onclick=openMemoryFilters;$('#closeMemoryFilter').onclick=closeSheets;$('#applyMemoryFilter').onclick=applyMemoryFilters;$('#clearMemoryFilter').onclick=clearMemoryFilters;$$('#memoryFilters button').forEach(button=>button.onclick=()=>{memoryState.activePrimaryFilter=button.dataset.filter;$$('#memoryFilters button').forEach(item=>item.classList.toggle('on',item===button));renderMemoryList()});$('#memorySort').onchange=event=>{memoryState.sortMode=event.target.value;renderMemoryList()};$('#memorySearch').oninput=event=>{memoryState.searchQuery=event.target.value;clearTimeout(memorySearchTimer);memorySearchTimer=setTimeout(()=>searchMemory(event.target.value),300)};
 $('#memorySearch').onfocus=$('#memorySearch').onblur=scheduleVisualViewportSync;$('#memoryBody').addEventListener?.('scroll',()=>{memoryState.scrollPosition=$('#memoryBody').scrollTop},{passive:true});
 $('#runBreath').onclick=runBreathDebug;$('#breathQuery').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();runBreathDebug()}};
 $('#photosNav').onclick=()=>showPhotos().catch(error=>toast(error.message));$('#closePhotos').onclick=showChat;$('#closeAlbum').onclick=()=>{activeAppView='photos';$('#albumPage').hidden=true;$('#photosPage').hidden=false};$('#closePhotoDetail').onclick=closePhotoDetail;$('#photoDetailMore').onclick=()=>toast('照片操作还没有开放');$('#photoDetailShare').onclick=async()=>{if(!activePhotoDetail)return;try{if(!navigator.share)return toast('当前浏览器不支持系统分享');await navigator.share({title:activePhotoDetail.albumName||'Photos',text:activePhotoDetail.note||'收藏的照片'})}catch(error){if(error.name!=='AbortError')toast('暂时无法分享')}};$('#newAlbum').onclick=openAlbumSheet;$('#cancelAlbum').onclick=closeSheets;$('#createAlbum').onclick=()=>createAlbumFromSheet().catch(error=>toast(error.message));$$('#albumMoods button').forEach(button=>button.onclick=()=>{selectedMood=button.dataset.mood;$$('#albumMoods button').forEach(item=>item.classList.toggle('on',item===button))});
 $('#closeAssistant').onclick=showChat;$('#editAssistant').onclick=openAssistantEdit;$('#cancelAssistantEdit').onclick=cancelAssistantEdit;$('#saveAssistantEdit').onclick=saveAssistantEdit;$('#changeAssistantAvatar').onclick=selectAssistantAvatar;$('#assistantAvatarInput').onchange=previewAssistantAvatar;$('#assistantSearch').onclick=openChatSearch;$('#assistantConversations').onclick=()=>{showChat();openContinuation()};$('#assistantMute').onclick=()=>toast('Mute is not connected yet');$('#assistantMore').onclick=()=>toast('More actions are not available yet');
-$('#closeUserHub').onclick=showChat;$('#myProfile').onclick=openUserProfile;$('#closeUserProfile').onclick=openUserHub;$('#editUserProfile').onclick=openUserEdit;$('#cancelUserProfileEdit').onclick=cancelUserEdit;$('#saveUserProfileEdit').onclick=saveUserEdit;$('#changeUserAvatar').onclick=()=>$('#userAvatarInput').click();$('#userAvatarInput').onchange=previewUserAvatar;$('#openConnections').onclick=openConnections;$$('[data-profile-soon]').forEach(button=>button.onclick=()=>toast('Coming soon'));
-$('#save').onclick=async()=>{saveDraft();const p=profile(activeProvider);if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected'){ $('#testMsg').className='test-msg bad';$('#testMsg').textContent=d.error||`Claude runtime：${d.state}`;return }}persist();updateStatus();closeSettings();toast('接好了，这条路记住了')};
-$('#test').onclick=async()=>{saveDraft();const p=profile(activeProvider);$('#testMsg').className='test-msg';$('#testMsg').textContent='正在敲门…';try{if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected')throw new Error(`Claude runtime：${d.state}`);persist();updateStatus();$('#testMsg').textContent=`门开了 · ${d.sessionName||p.runtimeId}`;return}const r=await fetch('/api/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:p})});const d=await r.json();if(!r.ok)throw new Error([d.error,d.detail].filter(Boolean).join('\n'));persist();updateStatus();$('#testMsg').textContent=`门开了 · ${d.model}`}catch(e){$('#testMsg').className='test-msg bad';$('#testMsg').textContent=e.message}};
-if(activeId&&!current())activeId='';if(installedPwa()){if(coldResumeDiagnostic)coldResumeDiagnostic.restoreStoredConversationEntered=true;const selected=restoreStoredConversation();if(coldResumeDiagnostic){coldResumeDiagnostic.restoreStoredConversationSelected=Boolean(selected);coldResumeDiagnostic.selectedMessageCount=selected&&Array.isArray(selected.messages)?Math.min(selected.messages.length,100000):null}} $('#togetherDays').textContent=String(getTogetherDays());renderAssistantProfile();renderUserProfile();renderProviders();selectProvider(activeProvider,false);renderAttachmentDraft();setupThoughtSheet();setupAddToChatDrag();renderAll();
+$('#closeUserHub').onclick=showChat;$('#myProfile').onclick=openUserProfile;$('#closeUserProfile').onclick=openUserHub;$('#editUserProfile').onclick=openUserEdit;$('#cancelUserProfileEdit').onclick=cancelUserEdit;$('#saveUserProfileEdit').onclick=saveUserEdit;$('#changeUserAvatar').onclick=()=>$('#userAvatarInput').click();$('#userAvatarInput').onchange=previewUserAvatar;$('#openConnections').onclick=openConnections;$('#toggleLocalRecoveryDiagnostic').onclick=()=>{const panel=$('#localRecoveryDiagnosticDetails');panel.hidden=!panel.hidden;$('#toggleLocalRecoveryDiagnostic').setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden)showLocalRecoveryDiagnostic()};$$('[data-profile-soon]').forEach(button=>button.onclick=()=>toast('Coming soon'));
+$('#save').onclick=async()=>{saveDraft();const p=profile(activeProvider);if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected'){ $('#testMsg').className='test-msg bad';$('#testMsg').textContent=d.error||`Claude runtime：${d.state}`;return }}if(!persistProfileSettings()||!await persist())return;updateStatus();closeSettings();toast('接好了，这条路记住了')};
+$('#test').onclick=async()=>{saveDraft();const p=profile(activeProvider);$('#testMsg').className='test-msg';$('#testMsg').textContent='正在敲门…';try{if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected')throw new Error(`Claude runtime：${d.state}`);if(!persistProfileSettings()||!await persist())return;updateStatus();$('#testMsg').textContent=`门开了 · ${d.sessionName||p.runtimeId}`;return}const r=await fetch('/api/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:p})});const d=await r.json();if(!r.ok)throw new Error([d.error,d.detail].filter(Boolean).join('\n'));if(!persistProfileSettings()||!await persist())return;updateStatus();$('#testMsg').textContent=`门开了 · ${d.model}`}catch(e){$('#testMsg').className='test-msg bad';$('#testMsg').textContent=e.message}};
+function finishChatBootstrap(){
+ if(activeId&&!current())activeId='';if(installedPwa()){if(coldResumeDiagnostic)coldResumeDiagnostic.restoreStoredConversationEntered=true;const selected=restoreStoredConversation();if(coldResumeDiagnostic){coldResumeDiagnostic.restoreStoredConversationSelected=Boolean(selected);coldResumeDiagnostic.selectedMessageCount=selected&&Array.isArray(selected.messages)?Math.min(selected.messages.length,100000):null}} $('#togetherDays').textContent=String(getTogetherDays());renderAssistantProfile();renderUserProfile();renderProviders();selectProvider(activeProvider,false);renderAttachmentDraft();setupThoughtSheet();setupAddToChatDrag();renderAll();
 globalThis.addEventListener?.('resize',scheduleVisualViewportSync);globalThis.visualViewport?.addEventListener?.('resize',scheduleVisualViewportSync);globalThis.visualViewport?.addEventListener?.('scroll',scheduleVisualViewportSync);if(globalThis.ResizeObserver)new ResizeObserver(syncComposerHeight).observe($('main>footer'));syncVisualViewport();syncComposerHeight();
 if(keyboardTraceEnabled()){
   const exportCard=$('#keyboardTraceExportCard');exportCard.hidden=false;exportCard.style.removeProperty('display');$('#exportKeyboardTrace').onclick=()=>void exportKeyboardTrace();
@@ -722,7 +891,9 @@ if(keyboardTraceEnabled()){
   $('#input').addEventListener('blur',()=>recordKeyboardTrace('textarea.blur'));
   document.addEventListener('visibilitychange',()=>{recordKeyboardTrace('document.visibilitychange');persistKeyboardTrace()});
   globalThis.addEventListener('pagehide',()=>{recordKeyboardTrace('pagehide');persistKeyboardTrace()});
-  recordKeyboardTrace('trace_initialized');
+   recordKeyboardTrace('trace_initialized');
+ }
+ beginChatRecoveryAfterBootstrap();
 }
 
 $('#chatMore').onclick=openAssistantDetails;
@@ -751,11 +922,11 @@ function restoreInterruptedConnection(){
     if(cold)cold.journalReplayAttemptedCount++;if(diagnostic)diagnostic.journalReplayAttemptedCount++;if(d.turnId)recoverConnection(request);else recoverByClientRequestId(request);
   }if(diagnostic)emitNotificationResumeDiagnostic('recovery')
 }
-restoreInterruptedConnection();
-const coldAvailableRuntimePromise=restoreAvailableProductionRuntime();if(coldResumeDiagnostic)void Promise.allSettled([coldResumeRuntimePromise,coldAvailableRuntimePromise].filter(Boolean)).then(()=>restoreColdProductionConversation()).finally(finishColdResumeDiagnostic);
+function beginChatRecoveryAfterBootstrap(){restoreInterruptedConnection();const coldAvailableRuntimePromise=restoreAvailableProductionRuntime();if(installedPwa())void Promise.allSettled([coldResumeRuntimePromise,coldAvailableRuntimePromise].filter(Boolean)).then(()=>restoreColdProductionConversation()).finally(finishColdResumeDiagnostic)}
+if(useIndexedDbChatStore)void initializeChatStorage().then(finishChatBootstrap);else finishChatBootstrap();
 async function recoverLegacySuppressedFinals(){return false}
 globalThis.navigator?.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.type==='qiuqiu-open-chat'&&event.data.target==='/')void restoreMainChatFromNavigation()});
-if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa34-close-sync1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
+if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa43-chat-idb-primary1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
 void loadShoppingApprovals();
 globalThis.setInterval?.(()=>{if(document.visibilityState!=='hidden')void loadShoppingApprovals()},5000);
 document.addEventListener?.('visibilitychange',()=>{if(document.visibilityState==='visible')void loadShoppingApprovals()});

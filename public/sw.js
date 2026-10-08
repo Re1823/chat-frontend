@@ -1,8 +1,10 @@
 const CACHE_PREFIX='qiuqiu-shell-';
-const CACHE_NAME='qiuqiu-shell-pwa34-close-sync1';
+const CACHE_NAME='qiuqiu-shell-pwa43-chat-idb-primary1';
 const SHELL_ASSETS=[
-  '/style.css?v=pwa34-close-sync1',
-  '/app.js?v=pwa34-close-sync1',
+  '/style.css?v=pwa36-send-rollback1',
+  '/app.js?v=pwa43-chat-idb-primary1',
+  '/desire-ui.js?v=non-desire-1',
+  '/desire.css?v=non-desire-1',
   '/manifest.webmanifest?v=pwa23',
   '/app-icon-192.png',
   '/app-icon-512.png',
@@ -10,8 +12,10 @@ const SHELL_ASSETS=[
 ];
 const SHELL_KEYS=new Set(SHELL_ASSETS);
 const SHELL_TYPES=new Map([
-  ['/style.css?v=pwa34-close-sync1','text/css'],
-  ['/app.js?v=pwa34-close-sync1','text/javascript'],
+  ['/style.css?v=pwa36-send-rollback1','text/css'],
+  ['/app.js?v=pwa43-chat-idb-primary1','text/javascript'],
+  ['/desire-ui.js?v=non-desire-1','text/javascript'],
+  ['/desire.css?v=non-desire-1','text/css'],
   ['/manifest.webmanifest?v=pwa23','application/manifest+json'],
   ['/app-icon-192.png','image/png'],
   ['/app-icon-512.png','image/png'],
