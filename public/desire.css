@@ -1,0 +1,63 @@
+/* Non-inspired owner view. Scoped so Chat and existing OB controls keep their CSS. */
+main.memory-mode{position:relative;--mind-nav-height:72px}
+main.memory-mode>.memory-page{height:calc(100% - var(--mind-nav-height) - env(safe-area-inset-bottom,0px));}
+main.memory-mode>.memory-page[hidden],main.memory-mode>.desire-page[hidden],main.memory-mode>.mind-bottom-nav[hidden]{display:none}
+main:not(.memory-mode)>.desire-page,main:not(.memory-mode)>.mind-bottom-nav{display:none}
+main.memory-mode>.desire-page{width:100%;height:calc(100% - var(--mind-nav-height) - env(safe-area-inset-bottom,0px));min-width:0;min-height:0;display:grid;grid-template-rows:auto 1fr;background:#f7f4ed;overflow:hidden}
+.desire-header{height:76px;display:grid;grid-template-columns:48px 1fr 48px;align-items:center;gap:8px;padding:8px max(20px,calc((100% - 860px)/2));border-bottom:1px solid #e6e1d7;background:#faf8f3;text-align:center}
+.desire-header strong{display:block;font:600 23px/1.1 Inter,"PingFang SC",sans-serif;letter-spacing:-.03em}
+.desire-header small{display:block;margin-top:4px;font-size:11px;letter-spacing:.18em;color:#aaa49a}
+.desire-header button{border:0;background:none;color:#2d2b28;min-width:44px;min-height:44px;font-size:27px;cursor:pointer}
+.desire-header #desireMore{font-size:20px;letter-spacing:2px}
+.desire-body{min-width:0;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable}
+.desire-content{width:min(100%,840px);padding:44px 36px 84px;margin:auto}
+.desire-intro{padding:0 0 37px;border-bottom:1px solid #e9e5dc}
+.desire-intro h1{margin:0;font:italic 400 clamp(31px,6vw,45px)/1.3 Georgia,"Songti SC","STSong",serif;letter-spacing:.02em}
+.desire-intro p{margin:14px 0 0;color:#aaa49a;font:italic 20px/1.6 Georgia,"Songti SC",serif}
+.desire-section{margin-top:38px}
+.desire-section h2{margin:0 0 17px;font:600 12px/1.4 Inter,"PingFang SC",sans-serif;letter-spacing:.19em;color:#77756e}
+.desire-winner-card{border:1px solid #f1dfe3;border-radius:22px;padding:24px 27px;background:radial-gradient(circle at 88% 26%,#f9dce9 0,#fcf4f4 44%,#fffaf8 100%);box-shadow:0 13px 28px #9f76741c}
+.desire-winner-eyebrow{font-size:12px;letter-spacing:.14em;color:#aa6e82;font-weight:600}
+.desire-winner-voice{margin:20px 0 24px;font:italic 400 clamp(23px,5vw,32px)/1.55 Georgia,"Songti SC","STSong",serif;color:#27211f;overflow-wrap:anywhere}
+.desire-winner-bottom{display:flex;align-items:center;gap:14px}
+.desire-winner-label{flex:none;padding:8px 15px;border-radius:99px;background:#f5d9e1;color:#763e53;font-weight:600;font-size:13px}
+.desire-progress{display:block;min-width:0;flex:1;height:6px;border-radius:99px;background:#eceae3;overflow:hidden}
+.desire-progress-fill{display:block;height:100%;border-radius:inherit;transition:width .25s ease}
+.desire-unavailable,.desire-thought-empty{margin:0;padding:28px 8px;color:#aaa49a;font:italic 17px/1.7 Georgia,"Songti SC",serif}
+.desire-drives{display:grid;gap:17px}
+.desire-drive-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:12px;min-width:0}
+.desire-drive-label{font-size:14px;color:#615f59;white-space:nowrap}
+.desire-drive-row .desire-progress{height:6px}
+.desire-thought-section{padding-top:28px;border-top:1px solid #e9e5dc}
+.desire-thought-subtitle{margin:-7px 0 22px;color:#aaa49a;font:italic 16px/1.5 Georgia,"Songti SC",serif}
+.desire-thoughts{display:grid;gap:10px}
+.desire-fixation{padding:17px 20px;border:1px solid #e6d8b7;border-radius:14px;background:#f8f0df;box-shadow:0 6px 18px #716b5420;min-width:0}
+.desire-fixation-heading{font-size:12px;color:#ab786e;letter-spacing:.08em}
+.desire-fixation-label{float:right;color:#a3926b;letter-spacing:0}
+.desire-fixation p,.desire-flit p{margin:9px 0 0;font:italic 17px/1.65 Georgia,"Songti SC",serif;white-space:pre-wrap;overflow-wrap:anywhere}
+.desire-flit{display:grid;grid-template-columns:22px minmax(0,1fr);gap:5px;align-items:start;padding:10px 3px;color:#a5a199;border-bottom:1px solid #ebe7df}
+.desire-flit-dot{font-size:22px;line-height:1.5;color:#b7b2a9}
+.desire-flit p{margin:0;font-size:15px;color:#8f8c86}
+main.memory-mode>.mind-bottom-nav{position:absolute;inset:auto 0 0;height:calc(var(--mind-nav-height) + env(safe-area-inset-bottom,0px));display:flex!important;justify-content:center;gap:min(8vw,80px);align-items:stretch;padding:2px 18px env(safe-area-inset-bottom,0px);border-top:1px solid #e7e3dc;background:#faf9f5f2;z-index:4;backdrop-filter:blur(12px)}
+main.memory-mode>.mind-bottom-nav[hidden]{display:none!important}
+main.memory-mode>.mind-bottom-nav button{width:90px;min-height:55px;border:0;background:transparent;color:#9e9a91;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font:inherit;cursor:pointer}
+main.memory-mode>.mind-bottom-nav button span{display:grid;place-items:center;width:36px;height:27px;border-radius:30px;font-size:23px;line-height:1}
+main.memory-mode>.mind-bottom-nav button small{font-size:11px}
+main.memory-mode>.mind-bottom-nav button.active{color:#282620}
+main.memory-mode>.mind-bottom-nav button.active span{background:#25241f;color:#fff}
+.desire-whitelist-backdrop{position:fixed;inset:0;background:#25231e55;z-index:38}
+.desire-whitelist-backdrop[hidden],.desire-whitelist-sheet[hidden]{display:none}
+.desire-whitelist-sheet{position:fixed;inset:auto 0 0;z-index:39;width:min(100%,680px);max-height:min(82dvh,calc(var(--vv-height,100dvh) - 20px));margin:auto;padding:18px 28px calc(26px + env(safe-area-inset-bottom,0px));border-radius:32px 32px 0 0;background:#fcfaf5;box-shadow:0 -22px 65px #29282130;overflow-y:auto;overflow-x:hidden}
+.desire-sheet-handle{width:36px;height:5px;border-radius:9px;background:#dedbd4;margin:-3px auto 28px}
+.desire-whitelist-sheet #closeWhitelist{position:absolute;right:18px;top:19px;min-width:44px;min-height:44px;border:0;background:none;font-size:25px;color:#a3a097;cursor:pointer}
+.desire-whitelist-sheet h2{margin:0 0 12px;font:italic 400 32px/1.3 Georgia,"Songti SC",serif}
+.desire-whitelist-sheet>p{margin:0 0 22px;color:#969188;font:italic 17px/1.6 Georgia,"Songti SC",serif}
+.whitelist-terms{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.whitelist-chip{display:inline-flex;align-items:center;gap:5px;padding:5px 7px 5px 12px;background:#f0ece4;border-radius:99px;color:#625e56;font-size:14px;max-width:100%;overflow-wrap:anywhere}
+.whitelist-chip button{border:0;background:none;color:#9a938a;font-size:18px;min-width:30px;min-height:30px;cursor:pointer}
+#whitelistForm{display:grid;grid-template-columns:minmax(0,1fr) 56px;gap:8px}
+#whitelistInput{min-width:0;width:100%;border:1px solid #ebe7df;border-radius:14px;padding:13px 17px;background:#f1f0eb;color:#333;font:16px/1.5 inherit;outline:0}
+#whitelistForm button{border:0;border-radius:14px;background:#1e1d1a;color:white;font-size:21px;cursor:pointer}
+.whitelist-status{min-height:20px;margin-top:10px;color:#a66d66;font-size:12px}
+@media(max-width:760px){main.memory-mode>.memory-page,main.memory-mode>.desire-page{height:calc(var(--vv-bottom,100dvh) - var(--vv-offset-top,0px) - var(--mind-nav-height) - env(safe-area-inset-bottom,0px))}.desire-header{height:67px;padding:5px 16px}.desire-content{padding:36px 22px 70px}.desire-intro{padding-bottom:31px}.desire-intro p{font-size:18px}.desire-section{margin-top:31px}.desire-winner-card{padding:21px 20px}.desire-whitelist-sheet{width:100%;padding-inline:22px}}
+@media(max-width:390px){.desire-content{padding-inline:19px}.desire-drive-row{grid-template-columns:66px minmax(0,1fr)}.desire-winner-bottom{gap:10px}.desire-winner-label{padding:7px 11px}.desire-whitelist-sheet{padding-inline:19px}}
