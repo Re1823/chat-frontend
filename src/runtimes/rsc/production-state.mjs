@@ -1,5 +1,5 @@
 import {mkdir,open,readFile,rename,rm,chmod} from 'node:fs/promises';import {dirname,join} from 'node:path';
-const QUEUE_STATES=new Set(['PREPARING','PREPARED','ACTIVATING','STARTING','STARTING_TARGET','TARGET_READY','COMMITTING','RECOVER_LAST_GOOD']);
+const QUEUE_STATES=new Set(['PREPARING','PREPARED','ACTIVATING','STARTING','STARTING_TARGET','TARGET_READY','COMMITTING','RECOVER_LAST_GOOD','FAILED_SAFE']);
 const HANDOFF_STATES=new Set(['VALIDATED','CANDIDATE_ACTIVE','VALIDATING','ACTIVE','COMMITTED','FAILED_SAFE','FAILED_STARTUP_TRANSCRIPT','FAILED_READINESS',...QUEUE_STATES]);
 const id=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const integer=value=>Number.isSafeInteger(value)&&value>=1;

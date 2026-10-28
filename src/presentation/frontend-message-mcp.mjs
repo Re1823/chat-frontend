@@ -15,6 +15,8 @@ export const frontendMessageTool = {
   inputSchema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: 16384 } }, required: ['text'], additionalProperties: false },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
 };
+export const stickerListTool={name:'list_available_stickers',description:'查看秋秋自己的可发表情名称、画面描述和情绪标签。只返回元数据；结合当下语气自然决定是否发表情，不必每次都发。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true}};
+export const stickerSendTool={name:'send_sticker',description:'向当前 frontend turn 发送一张秋秋自己的动态表情。可在 send_frontend_message 前后调用；只有确实贴合当前感受时才使用。无效或不属于秋秋的 ID 会被拒绝。',inputSchema:{type:'object',properties:{sticker_id:{type:'string',pattern:'^stk_[A-Za-z0-9_-]{32}$'}},required:['sticker_id'],additionalProperties:false},annotations:{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false}};
 export const timeAnchorTool = {
   name: 'read_time_anchor',
   description: 'Read the current conversation’s verified local time facts when real elapsed time may change the meaning of the conversation. Use selectively; rapid continuous chat does not need repeated checks. The tool is read-only and accepts no arguments.',
@@ -28,7 +30,7 @@ export const frontendImageTool = {
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 };
 
-export function createMcpHandler({ deliver, readAnchor = async () => { throw new Error('Time Anchor unavailable'); }, readFrontendImage = async () => { throw new Error('Frontend image unavailable'); }, runPhotosTool = async () => { throw new Error('Photos unavailable'); } }) {
+export function createMcpHandler({ deliver, listStickers=async()=>[], sendSticker=async()=>{throw new Error('Stickers unavailable')}, readAnchor = async () => { throw new Error('Time Anchor unavailable'); }, readFrontendImage = async () => { throw new Error('Frontend image unavailable'); }, runPhotosTool = async () => { throw new Error('Photos unavailable'); } }) {
   let initialized = false;
   const calls = new Map();
   return async request => {
@@ -43,10 +45,12 @@ export function createMcpHandler({ deliver, readAnchor = async () => { throw new
     }
     if (!initialized) return error(-32002, 'Initialize first');
     if (request.method === 'ping') return result({});
-    if (request.method === 'tools/list') return result({ tools: [frontendMessageTool, timeAnchorTool, frontendImageTool, ...photosMcpTools] });
+    if (request.method === 'tools/list') return result({ tools: [frontendMessageTool,stickerListTool,stickerSendTool, timeAnchorTool, frontendImageTool, ...photosMcpTools] });
     if (request.method !== 'tools/call') return error(-32601, 'Method not found');
     const params = request.params;
-    if (!params || ![frontendMessageTool.name, timeAnchorTool.name, frontendImageTool.name,...photosMcpTools.map(tool=>tool.name)].includes(params.name) || Object.keys(params).some(k => !['name', 'arguments', '_meta'].includes(k))) return error(-32602, 'Unknown tool or parameters');
+    if (!params || ![frontendMessageTool.name,stickerListTool.name,stickerSendTool.name, timeAnchorTool.name, frontendImageTool.name,...photosMcpTools.map(tool=>tool.name)].includes(params.name) || Object.keys(params).some(k => !['name', 'arguments', '_meta'].includes(k))) return error(-32602, 'Unknown tool or parameters');
+    if(params.name===stickerListTool.name){if(!params.arguments||Object.keys(params.arguments).length)return error(-32602,'No arguments expected');try{return result({content:[{type:'text',text:JSON.stringify(await listStickers())}]})}catch(e){return result({isError:true,content:[{type:'text',text:e.message||'Stickers unavailable'}]})}}
+    if(params.name===stickerSendTool.name){const args=params.arguments;if(!args||Object.keys(args).join(',')!=='sticker_id'||!/^stk_[A-Za-z0-9_-]{32}$/.test(args.sticker_id||''))return error(-32602,'Invalid sticker ID');const key=JSON.stringify(request.id),fingerprint=JSON.stringify(params);if(calls.has(key)){const prior=calls.get(key);return prior.fingerprint===fingerprint?prior.response:error(-32600,'Request ID reused with different arguments')}const response=(async()=>{try{return result({content:[{type:'text',text:JSON.stringify(await sendSticker(args.sticker_id,randomUUID()))}]})}catch(e){return result({isError:true,content:[{type:'text',text:e.message||'Sticker delivery failed'}]})}})();calls.set(key,{fingerprint,response});if(calls.size>2048)calls.delete(calls.keys().next().value);return response}
     if (params.name === timeAnchorTool.name) {
       if (!params.arguments || typeof params.arguments !== 'object' || Array.isArray(params.arguments) || Object.keys(params.arguments).length) return error(-32602, 'read_time_anchor accepts no arguments');
       try { return result({ content: [{ type: 'text', text: JSON.stringify(await readAnchor()) }] }); }
@@ -100,6 +104,14 @@ export function createLocalDelivery(secret, fetchImpl = fetch) {
   };
 }
 
+export function createLocalStickerClient(secret,fetchImpl=fetch){
+  const headers={'x-frontend-delivery-secret':secret};
+  return {
+    async list(){const response=await fetchImpl('http://127.0.0.1:4173/api/internal/sticker-library',{headers,signal:AbortSignal.timeout(5000)});if(!response.ok)throw Error(`Sticker library unavailable (${response.status})`);return (await response.json()).items},
+    async send(stickerId,requestId){const response=await fetchImpl('http://127.0.0.1:4173/api/internal/frontend-sticker',{method:'POST',headers:{...headers,'content-type':'application/json','x-frontend-delivery-id':requestId},body:JSON.stringify({stickerId}),signal:AbortSignal.timeout(5000)});if(!response.ok)throw Error(`Sticker delivery rejected (${response.status})`);return response.json()}
+  };
+}
+
 export function createLocalImageReader(secret, fetchImpl = fetch) {
   return async imageId => {
     if (typeof secret !== 'string' || secret.length < 32) throw new Error('Frontend image credential unavailable');
@@ -119,8 +131,10 @@ export function createLocalPhotosClient(secret, fetchImpl=fetch){return async(na
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const deliverySecret=validateFrontendDeliverySecret(process.env.DWELL_FRONTEND_DELIVERY_SECRET);
   if(!deliverySecret){process.stderr.write('frontend helper credential unavailable\n');process.exit(78)}
+  const stickers=createLocalStickerClient(deliverySecret);
   const handle = createMcpHandler({
     deliver: createLocalDelivery(deliverySecret),
+    listStickers:()=>stickers.list(),sendSticker:(id,requestId)=>stickers.send(id,requestId),
     readAnchor: () => readTimeAnchor({ instanceKey: process.env.QIUQIU_TIME_ANCHOR_INSTANCE_KEY, baseDir: process.env.QIUQIU_TIME_ANCHOR_STATE_DIR }),
     readFrontendImage: createLocalImageReader(deliverySecret),
     runPhotosTool: createLocalPhotosClient(deliverySecret)

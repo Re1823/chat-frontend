@@ -2,6 +2,13 @@ node_modules/
 *.log
 data/*
 !data/.gitkeep
+.data/
+.tmp/
+.npm-cache/
+tmp/
+work/
+__pycache__/
+*.pyc
 .env
 .env.*
 !.env.example

@@ -1,5 +1,6 @@
 import {FRONTEND_MESSAGE_TOOL,isExternalUserPrompt} from './rsc/authoritative-turns.mjs';
 import {contentBlocks,textContent} from './rsc/transcript-parser.mjs';
+import {stripThoughtTagFromHistory} from '../non/thought-tag.mjs';
 
 const DEFAULT_MAX_BYTES=1024*1024;
 const imageContext=/^<frontend_image_context>[\s\S]*?<\/frontend_image_context>(?:\r?\n){0,2}/;
@@ -25,9 +26,9 @@ function replayableTurns(records){
       for(const block of contentBlocks(record)){
         if(block?.type==='tool_use'&&typeof block.id==='string')pending.add(block.id);
         if(block?.type==='tool_result'&&(typeof block.tool_use_id!=='string'||!pending.delete(block.tool_use_id)))invalid=true;
-        if(block?.type==='tool_use'&&block.name===FRONTEND_MESSAGE_TOOL){const input=block.input;if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||typeof input.text!=='string'||!input.text.trim()||input.text.length>16384)invalid=true;else frontend.push({text:input.text,timestamp:record.timestamp||null})}
+        if(block?.type==='tool_use'&&block.name===FRONTEND_MESSAGE_TOOL){const input=block.input;if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||typeof input.text!=='string'||!input.text.trim()||input.text.length>16384)invalid=true;else {const visible=stripThoughtTagFromHistory(input.text);if(!visible.trim())invalid=true;else frontend.push({text:visible,timestamp:record.timestamp||null})}}
       }
-      if(record.type==='assistant'&&textContent(record)&&!record.attributionMcpServer&&!record.attributionMcpTool)ordinary.push({text:textContent(record),timestamp:record.timestamp||null});
+      if(record.type==='assistant'&&textContent(record)&&!record.attributionMcpServer&&!record.attributionMcpTool){const visible=stripThoughtTagFromHistory(textContent(record));if(visible.trim())ordinary.push({text:visible,timestamp:record.timestamp||null})}
     }
     if(invalid||pending.size)continue;const assistant=frontend.length?frontend:ordinary,userText=textContent(user).replace(imageContext,'').trim();if(!userText||!assistant.length)continue;
     turns.push({userText,startTimestamp:user.timestamp||null,endTimestamp:segment[durationIndex].timestamp||null,assistantMessages:assistant});

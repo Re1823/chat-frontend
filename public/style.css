@@ -113,6 +113,13 @@ main:not(.memory-mode)>.messages{
   margin:0;white-space:pre-wrap;word-break:normal;overflow-wrap:break-word;text-align:left;text-indent:0;
 }
 #messages .message.user .bubble{background:var(--bubble-user)}
+#messages .assistant-typing{min-width:0;margin:0}
+#messages .assistant-typing .typing-bubble{display:flex;align-items:center;justify-content:center;gap:5px;min-width:60px;height:38px;padding:0 13px;border-radius:19px;background:var(--bg)}
+#messages .typing-bubble span{display:block;width:7px;height:7px;flex:0 0 7px;border-radius:50%;background:#aaa6a1;animation:typing-hop 1.35s ease-in-out infinite}
+#messages .typing-bubble span:nth-child(2){animation-delay:.16s}
+#messages .typing-bubble span:nth-child(3){animation-delay:.32s}
+@keyframes typing-hop{0%,18%,58%,100%{transform:translateY(0)}35%{transform:translateY(-4px)}}
+@media(prefers-reduced-motion:reduce){#messages .typing-bubble span{animation:none}}
 #messages .bubble p{max-width:none;width:auto;margin:0;word-break:normal;overflow-wrap:break-word;text-align:left;text-indent:0}
 #messages .bubble pre{max-width:100%;font-size:12px;white-space:pre;overflow:auto}
 #messages .bubble pre code{padding:0;background:none;color:inherit}
@@ -143,7 +150,7 @@ main:not(.memory-mode) .composer textarea::placeholder{font-size:16px;color:#aaa
 .composer-controls .model-pill span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .composer-controls .model-pill svg{width:14px;height:14px}
 .composer-controls .send,.composer-controls .send:disabled,.composer-controls .send:active{background:var(--btn-dark);color:#fff;transition:none}
-.composer-controls .send:disabled{cursor:default}
+.composer-controls .send:disabled{cursor:default;opacity:.45}
 .composer-controls button:active{opacity:.7}
 main:not(.memory-mode) .welcome{padding:24px 8px;max-width:100%;color:var(--text)}
 main:not(.memory-mode) .welcome p{color:var(--text-muted)}
@@ -269,3 +276,39 @@ body:has(main:not(.memory-mode)) .connections-detail.leaving:not(.on){visibility
 .shopping-approval-note{margin:10px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
 .shopping-approval-actions{display:flex;gap:10px;margin-top:15px}.shopping-approval-actions button{flex:1;border:1px solid var(--line);border-radius:12px;background:transparent;color:var(--ink);padding:11px;cursor:pointer}.shopping-approval-actions button:last-child{background:var(--ink);border-color:var(--ink);color:var(--paper)}.shopping-approval-actions button:disabled{opacity:.45;cursor:default}
 .shopping-approval-terminal{padding:0;overflow:hidden}.shopping-approval-toggle{display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:14px 18px;border:0;background:transparent;color:var(--ink);font:inherit;text-align:left;cursor:pointer}.shopping-approval-summary{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.shopping-approval-summary strong{color:var(--accent);font-variant-numeric:tabular-nums}.shopping-approval-state{flex:none;color:var(--muted);font-size:11px;white-space:nowrap}.shopping-approval-chevron{flex:none;color:var(--muted);font-size:18px;line-height:1;transition:transform .15s ease}.shopping-approval-toggle[aria-expanded="true"] .shopping-approval-chevron{transform:rotate(180deg)}.shopping-approval-terminal .shopping-approval-details{padding:0 20px 18px}
+.sticker-sheet{z-index:30}.sticker-tabs{display:flex;gap:8px;margin-bottom:16px}.sticker-tabs button{flex:1;border:1px solid var(--line);border-radius:10px;background:transparent;padding:10px;color:var(--ink)}.sticker-tabs button.on{background:var(--soft)}.sticker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(82px,1fr));grid-auto-rows:112px;gap:10px;max-height:42vh;overflow:auto}.sticker-tile{text-align:center;min-width:0}.sticker-tile>button{width:68px;height:68px;border:0;background:transparent;padding:5px;cursor:pointer;-webkit-tap-highlight-color:transparent}.sticker-tile>button:disabled{cursor:default}.sticker-tile img{width:58px;height:58px;object-fit:contain}.sticker-tile small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sticker-tile>div{display:flex;justify-content:center;gap:5px}.sticker-tile>div button{border:0;background:none;color:var(--muted);font-size:11px;cursor:pointer}.sticker-manager{margin-top:20px;border-top:1px solid var(--line);padding-top:14px}.sticker-manager summary{cursor:pointer}.sticker-manager form{display:grid;gap:12px;margin-top:14px}.sticker-manager label{display:grid;gap:5px;font-size:12px}.sticker-manager input,.sticker-manager textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--paper);color:var(--ink)}.sticker-manager button{border:0;border-radius:9px;background:var(--ink);color:var(--paper);padding:10px}.sticker-manager button:disabled{opacity:.45}.sticker-draft{position:relative;width:60px;height:60px}.sticker-draft img{width:52px;height:52px;object-fit:contain}.sticker-draft button{position:absolute;right:0;top:0;border:0;border-radius:50%;background:var(--ink);color:var(--paper);cursor:pointer}.sticker-message{align-items:center}.sticker-message>img{width:116px;height:116px;object-fit:contain;background:transparent;border:0}.sticker-message.user>img{justify-self:end}
+/* Sticker picker takes the soft keyboard's space under the unchanged composer. */
+.sticker-panel-open .app{height:var(--sticker-chat-bottom);max-height:var(--sticker-chat-bottom)}
+.sticker-panel-open main:not(.memory-mode)>footer{padding-bottom:8px}
+.sticker-panel[hidden],.sticker-editor[hidden]{display:none}
+.sticker-panel{position:fixed;z-index:4;inset:var(--sticker-chat-bottom) 0 0;background:#f8f5ef;border-top:1px solid #e9e3d9;padding:16px max(12px,calc((100% - 680px)/2)) calc(16px + env(safe-area-inset-bottom,0px));overflow-y:auto;overscroll-behavior:contain;opacity:0;transform:translateY(12px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+.sticker-panel.on{opacity:1;transform:none;pointer-events:auto}
+.sticker-panel-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px 8px;align-content:start}
+.sticker-panel-grid button{width:100%;aspect-ratio:1;border:0;background:none;padding:5px;border-radius:13px;display:grid;place-items:center;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.sticker-panel-grid img{display:block;width:100%;height:100%;object-fit:contain}
+.sticker-panel-grid .sticker-panel-add{border:1.5px dashed #bdb6aa;background:#fcfaf7;color:#777168;font:300 40px/1 inherit}
+.composer-controls .emoji[aria-expanded="true"]{background:#ece6dc;color:var(--ink)}
+/* The management sheet has its own scroll area and two drag stops. */
+.sticker-sheet{z-index:30;inset:auto 0 0;width:min(100%,680px);height:min(52dvh,560px);max-height:calc(100dvh - 36px);margin:0 auto;padding:0 18px calc(16px + env(safe-area-inset-bottom,0px));border-radius:28px 28px 0 0;background:#fcfaf7;box-shadow:0 -20px 64px #3e352721;display:flex;flex-direction:column;overflow:hidden;transform:translateY(calc(105% + var(--sticker-drag,0px)));transition:height .28s cubic-bezier(.22,.8,.25,1),transform .28s cubic-bezier(.22,.8,.25,1)}
+.sticker-sheet.on{transform:translateY(var(--sticker-drag,0px))}
+.sticker-sheet.expanded{height:calc(100dvh - 36px - env(safe-area-inset-top,0px))}
+.sticker-sheet.dragging{transition:none}
+.sticker-handle{height:27px;flex:0 0 27px;display:grid;place-items:center;touch-action:none;cursor:grab}
+.sticker-handle span{width:43px;height:5px;border-radius:999px;background:#d2cdc5}
+.sticker-sheet>header{display:grid;place-items:center;justify-content:center;align-items:center;flex:0 0 36px;width:100%;margin:0 0 9px}
+.sticker-sheet>header h2{margin:0;font:600 17px/1.2 Inter,"PingFang SC",system-ui,sans-serif;color:#2b2925}
+.sticker-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:17px}
+.sticker-tabs{display:flex;gap:2px;min-width:164px;margin:0;padding:3px;border-radius:999px;background:#eeeae3}
+.sticker-tabs button{min-height:36px;flex:1;border:0;border-radius:999px;background:transparent;padding:5px 15px;color:#716c64;font:500 14px/1 inherit;cursor:pointer}
+.sticker-tabs button.on{background:#fffdfa;color:#2c2925;box-shadow:0 2px 8px #51453214}
+.sticker-actions{display:flex;gap:8px}
+.sticker-actions button{display:grid;place-items:center;width:38px;height:38px;border:0;border-radius:50%;background:#fffdfa;color:#514d47;box-shadow:0 2px 10px #51453212;font:300 28px/1 inherit;cursor:pointer}
+.sticker-actions button svg{width:19px;height:19px}.sticker-actions button.on{background:#e9e3d9}
+.sticker-sheet .sticker-grid{flex:1;min-height:0;max-height:none;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:78px;gap:20px 10px;align-content:start;padding:12px 2px 20px;overflow-y:auto;overscroll-behavior:contain}
+.sticker-tile{position:relative;min-width:0;height:78px}.sticker-tile>button{width:100%;height:100%;padding:4px}.sticker-tile img{width:100%;height:100%;object-fit:contain}
+.sticker-tile .sticker-tile-delete{position:absolute;right:0;top:0;width:24px;height:24px;border-radius:50%;background:#3b3733;color:white;font-size:18px;line-height:1;padding:0}
+.sticker-editor{position:absolute;z-index:2;inset:27px 0 0;overflow-y:auto;overscroll-behavior:contain;padding:5px 20px calc(22px + env(safe-area-inset-bottom,0px));background:#fcfaf7}
+.sticker-editor>header{display:grid;grid-template-columns:44px 1fr 44px;align-items:center;height:44px;margin-bottom:12px}.sticker-editor>header strong{text-align:center;font-size:16px}.sticker-editor>header button{border:0;background:none;color:var(--ink);font:300 30px/1 inherit;text-align:left}
+.sticker-editor form{display:grid;gap:14px}.sticker-editor label{display:grid;gap:6px;color:#706b64;font-size:12px}.sticker-editor label[hidden]{display:none}.sticker-editor input,.sticker-editor textarea{width:100%;min-height:42px;border:1px solid #e0d9cd;border-radius:11px;background:#fffdfa;color:var(--ink);padding:9px 11px;font-size:16px;line-height:1.4;font-family:inherit}.sticker-editor textarea{min-height:75px;resize:vertical}.sticker-editor button[type="submit"]{min-height:44px;border:0;border-radius:12px;background:var(--ink);color:var(--paper);font:500 15px/1 inherit}.sticker-editor button:disabled{opacity:.45}
+@media(max-width:390px){.sticker-panel-grid{gap:12px 7px}.sticker-sheet .sticker-grid{gap:18px 8px}}
+@media(prefers-reduced-motion:reduce){.sticker-sheet,.sticker-panel{transition:none}}

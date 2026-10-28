@@ -1,4 +1,5 @@
 import {contentBlocks,isCompactRecord,textContent} from './transcript-parser.mjs';
+import {stripThoughtTagFromHistory} from '../../non/thought-tag.mjs';
 
 export const FRONTEND_MESSAGE_TOOL='mcp__qiuqiu-frontend__send_frontend_message';
 const allowedKinds=new Set(['clean','high','state']);
@@ -36,7 +37,8 @@ function frontendText(block){
  if(block?.type!=='tool_use'||block.name!==FRONTEND_MESSAGE_TOOL)return {matched:false};
  const input=block.input;
  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==1||typeof input.text!=='string'||input.text.length<1||input.text.length>16384)return {matched:true,valid:false,reason:'INVALID_FRONTEND_MESSAGE_PAYLOAD'};
- return {matched:true,valid:true,text:input.text};
+ const visible=stripThoughtTagFromHistory(input.text);
+ return visible.trim()?{matched:true,valid:true,text:visible}:{matched:true,valid:false,reason:'HIDDEN_ONLY_FRONTEND_MESSAGE'};
 }
 
 function activeAncestry(records){
@@ -67,7 +69,10 @@ export function authoritativeConversationalTurns(records){
     if(block?.type==='tool_result'&&(typeof block.tool_use_id!=='string'||!pending.delete(block.tool_use_id)))toolError='ORPHAN_TOOL_RESULT';
     const candidate=frontendText(block);if(candidate.matched){if(!candidate.valid)invalidFrontend=candidate.reason;else frontend.push({text:candidate.text,record,toolUseId:block.id||null})}
    }
-   if(record.type==='assistant'&&textContent(record)&&!record.attributionMcpServer&&!record.attributionMcpTool)ordinary.push({text:textContent(record),record});
+   if(record.type==='assistant'&&textContent(record)&&!record.attributionMcpServer&&!record.attributionMcpTool){
+    const visible=stripThoughtTagFromHistory(textContent(record));
+    if(visible.trim())ordinary.push({text:visible,record});
+   }
   }
   if(toolError){fail(toolError);continue}if(pending.size){fail('MISSING_TOOL_RESULT');continue}if(invalidFrontend){fail(invalidFrontend);continue}
   const messages=frontend.length?frontend:ordinary;

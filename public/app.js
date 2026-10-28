@@ -28,6 +28,7 @@ let userProfile=readUserProfile(),userAvatarUrl=readSavedAvatar(userAvatarKey),u
 let activeRequest=null;
 const activeRequests=new Map();
 let sending = false, continuationSourceId='', activeTurnId='', tmuxStatus={state:'unknown'}, draftImages=[],pendingImageUploads=0;
+let stickerItems=[],stickerTab='user',pendingSticker=null;
 const profile = id => ({...providerChoices[id], ...(profiles[id] || {})});
 const useIndexedDbChatStore=globalThis.matchMedia?.('(display-mode: standalone)')?.matches||globalThis.navigator?.standalone===true;
 let chatStoreMode=useIndexedDbChatStore?'loading':'legacy',chatStorageUnsaved=false,chatRevision=0,committedChatRecord=null,chatWriteTail=Promise.resolve();
@@ -135,7 +136,7 @@ function saveDraft(){ if(!activeProvider)return; const p=profile(activeProvider)
 function persistProfileSettings(){if(chatStoreMode!=='idb')return true;try{const raw=JSON.stringify(profiles);localStorage.setItem('dwell.profiles',raw);if(localStorage.getItem('dwell.profiles')!==raw)throw new Error('profile_verification_failed');return true}catch{try{toast('接入设置尚未保存，请检查本机空间')}catch{}return false}}
 function openSettings(returnView='chat'){ closeSheets();settingsReturnView=returnView;selectProvider(activeProvider);refreshNotificationState();$('#settings').classList.remove('leaving');$('#shade').classList.add('on');$('#settings').classList.add('on') }
 function closeSheets(){ $('#shade').classList.remove('on'); $$('.sheet').forEach(x=>x.classList.remove('on'));const add=$('#addToChatSheet');add?.classList.remove('closing','dragging');add?.style?.removeProperty?.('--add-chat-drag');add?.setAttribute?.('aria-hidden','true');document.body.classList.remove('add-chat-open') }
-function closeTransientUI(){closeSheets();globalThis.NonDesireUI?.closeSheet?.();closeViewer()}
+function closeTransientUI(){closeStickerPanel();closeSheets();globalThis.NonDesireUI?.closeSheet?.();closeViewer()}
 function closeSettings(){ closeConnections(); }
 const pushInstallationKey='dwell.pushInstallationId';let currentPushSubscription=null,notificationBusy=false;
 const installedPwa=()=>globalThis.matchMedia?.('(display-mode: standalone)')?.matches||globalThis.navigator?.standalone===true;
@@ -196,13 +197,34 @@ async function toggleNotifications(){
   }catch(error){setNotificationUi(error.message||'通知设置失败','重试',false)}finally{notificationBusy=false}
 }
 function configured(){ const p=profile(activeProvider); return p.runtime==='claude_tmux'?tmuxStatus.state==='connected':!!(p.key&&p.model); }
-function updateStatus(){ const p=profile(activeProvider),hasDraft=!!$('#input').value.trim()||draftImages.length>0; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=chatStorageUnsaved?'本机聊天记录尚未保存':configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=chatStoreMode==='loading'||chatStoreMode==='unavailable'||!configured()||!hasDraft||pendingImageUploads>0; $('#send').innerHTML=chatIcons.plane; $('#send').setAttribute?.('aria-label','发送'); }
+function updateStatus(){ const p=profile(activeProvider),hasDraft=!!$('#input').value.trim()||draftImages.length>0||!!pendingSticker; const label=p.runtime==='claude_tmux'?`${p.name} · ${tmuxStatus.state||'unknown'}`:`${p.name} · ${p.model}`; $('#modelLabel').textContent=p.runtime==='claude_tmux'?'Sonnet 4.6':configured()?p.model:'未接入'; $('#modelBtn').disabled=p.runtime==='claude_tmux'; $('#modelBtn').setAttribute?.('aria-label',p.runtime==='claude_tmux'?'Sonnet 4.6（固定模型）':'模型与接入设置'); $('#modelBtn').setAttribute?.('title',label); $('#statusLine').textContent=chatStorageUnsaved?'本机聊天记录尚未保存':configured()?`${p.name} 正在这里`:p.runtime==='claude_tmux'&&tmuxStatus.state==='reconnecting'?'正在重连':p.runtime==='claude_tmux'?`Claude runtime：${tmuxStatus.state||'unknown'}`:'选一条路，让他醒来'; $('#providerDot').classList.toggle('on',configured()); $('#send').disabled=chatStoreMode==='loading'||chatStoreMode==='unavailable'||!configured()||!hasDraft||pendingImageUploads>0; $('#send').innerHTML=chatIcons.plane; $('#send').setAttribute?.('aria-label','发送'); }
+const runtimeRetryDelays=[1500,4000,8000];
+let runtimeRetryTimer=null,runtimeRetryCount=0,runtimeStatusInFlight=null,lastRuntimeCheckAt=0;
+function clearRuntimeRetry(){if(runtimeRetryTimer)clearTimeout(runtimeRetryTimer);runtimeRetryTimer=null}
+function scheduleRuntimeRetry(){
+  clearRuntimeRetry();
+  if(tmuxStatus.state!=='reconnecting'||runtimeRetryCount>=runtimeRetryDelays.length||document.visibilityState==='hidden')return;
+  runtimeRetryTimer=setTimeout(()=>{runtimeRetryTimer=null;if(document.visibilityState==='hidden')return;runtimeRetryCount++;void refreshRuntimeStatus()},runtimeRetryDelays[runtimeRetryCount]);
+}
 async function refreshRuntimeStatus({diagnostic=false}={}){
+  if(runtimeStatusInFlight)return runtimeStatusInFlight;
+  const request=(async()=>{
+  lastRuntimeCheckAt=Date.now();
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);let httpStatus=null;
   if(diagnostic&&notificationResumeDiagnostic)notificationResumeDiagnostic.runtimeRequestExecuted=true;
   if(coldResumeDiagnostic)coldResumeDiagnostic.runtimeRequestExecuted=true;
-  try{const r=await fetch('/api/runtimes/claude-tmux/status',{signal:controller.signal});httpStatus=r.status;const body=await r.text();let data;try{data=JSON.parse(body)}catch{throw new Error('Claude runtime 状态响应格式无效')}if(!r.ok)throw new Error(data.error||`Claude runtime 状态请求失败（HTTP ${r.status}）`);if(!data||typeof data.state!=='string')throw new Error('Claude runtime 状态响应缺少 state');tmuxStatus=data}catch(e){tmuxStatus={state:'unreachable',error:e.name==='AbortError'?'Claude runtime 状态请求超时':e.message}}finally{clearTimeout(timer)}
+  try{const r=await fetch('/api/runtimes/claude-tmux/status',{signal:controller.signal});httpStatus=r.status;const body=await r.text();let data;try{data=JSON.parse(body)}catch{throw new Error('Claude runtime 状态响应格式无效')}if(!r.ok)throw new Error(data.error||`Claude runtime 状态请求失败（HTTP ${r.status}）`);if(!data||typeof data.state!=='string')throw new Error('Claude runtime 状态响应缺少 state');tmuxStatus=data}catch(e){tmuxStatus={state:e.name==='AbortError'||httpStatus===504?'reconnecting':'unreachable',error:e.name==='AbortError'?'Claude runtime 状态请求超时':e.message}}finally{clearTimeout(timer)}
+  if(tmuxStatus.state==='connected')runtimeRetryCount=0;
+  scheduleRuntimeRetry();
   updateStatus();const known=['unknown','connected','unreachable','disabled','unsupported_platform','missing','exited'];if(diagnostic&&notificationResumeDiagnostic){notificationResumeDiagnostic.runtimeHttpStatus=httpStatus;notificationResumeDiagnostic.runtimeState=known.includes(tmuxStatus.state)?tmuxStatus.state:'unknown';notificationResumeDiagnostic.runtimeActive=typeof tmuxStatus.active==='boolean'?tmuxStatus.active:null;notificationResumeDiagnostic.runtimeActiveTurnPresent=tmuxStatus.activeTurnId===undefined?null:Boolean(tmuxStatus.activeTurnId);emitNotificationResumeDiagnostic('runtime_refresh')}if(coldResumeDiagnostic){coldResumeDiagnostic.runtimeHttpStatus=httpStatus;coldResumeDiagnostic.runtimeState=known.includes(tmuxStatus.state)?tmuxStatus.state:'unknown';coldResumeDiagnostic.runtimeActive=typeof tmuxStatus.active==='boolean'?tmuxStatus.active:null;coldResumeDiagnostic.runtimeActiveTurnPresent=tmuxStatus.activeTurnId===undefined?null:Boolean(tmuxStatus.activeTurnId)}return tmuxStatus
+  })();
+  runtimeStatusInFlight=request;
+  try{return await request}finally{runtimeStatusInFlight=null}
+}
+function recheckRuntimeOnResume(){
+  if(document.visibilityState==='hidden'||globalThis.navigator?.onLine===false||profile(activeProvider).runtime!=='claude_tmux')return;
+  if(Date.now()-lastRuntimeCheckAt<2000&&!(tmuxStatus.state==='reconnecting'&&!runtimeRetryTimer))return;
+  clearRuntimeRetry();runtimeRetryCount=0;void refreshRuntimeStatus();
 }
 async function restoreAvailableProductionRuntime({diagnostic=false}={}){
   const cold=coldResumeDiagnostic;if(!installedPwa()){if(cold)cold.restoreAvailableReason='not_standalone';return false}if(profile(activeProvider).runtime==='claude_tmux'){if(cold)cold.restoreAvailableReason='already_claude_runtime';return false}if(configured()){if(cold)cold.restoreAvailableReason='already_configured';return false}if(cold){cold.restoreAvailableEntered=true;cold.restoreAvailableReason='entered'}
@@ -273,15 +295,20 @@ async function readChatStateRecords(){
     transaction.oncomplete=()=>resolve({current:currentRequest.result,previous:previousRequest.result,verifiedRevision:verifiedRequest.result});transaction.onabort=()=>reject(transaction.error||new Error('chat_state_read_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('chat_state_read_failed'));
   })}finally{db.close()}
 }
-async function commitChatStateRecord(record,previous){
+async function commitChatStateRecord(record,previous,{expectedState=null}={}){
   const db=await openChatDatabase();
   try{
     await new Promise((resolve,reject)=>{
       const transaction=db.transaction('chat-state','readwrite'),store=transaction.objectStore('chat-state');
       transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||new Error('chat_state_write_aborted'));transaction.onerror=()=>reject(transaction.error||new Error('chat_state_write_failed'));
-      const current=store.get('current');current.onsuccess=()=>{
+      const current=store.get('current');
+      const prior=expectedState?store.get('previous'):null;
+      const pointer=expectedState?store.get('verifiedRevision'):null;
+      (pointer||current).onsuccess=()=>{
         const found=current.result;
-        if(previous?(!validChatRecord(found)||Object.keys(previous).some(key=>found[key]!==previous[key])):found!==undefined){transaction.abort();return}
+        if(expectedState){
+          if(!recoverySame(found,expectedState.current)||!recoverySame(prior.result,expectedState.previous)||pointer.result!==expectedState.verifiedRevision){transaction.abort();return}
+        }else if(previous?(!validChatRecord(found)||Object.keys(previous).some(key=>found[key]!==previous[key])):found!==undefined){transaction.abort();return}
         if(previous)store.put(previous,'previous');store.put(record,'current');
       };
     });
@@ -379,7 +406,315 @@ async function restoreColdProductionConversation(){
     step='render';sessions=mergedSessions;activeId=mergedActiveId;if(!selected){activeProvider='claude_tmux';profiles.claude_tmux={runtime:'claude_tmux',runtimeId:tmuxStatus.runtimeId||runtimePresets.claude_tmux.runtimeId};renderProviders()}renderAll();restoreInterruptedConnection();noteLocalRecovery('complete','success');return true;
   }catch(error){if(step==='backup')noteBackupException(error,backupOperation);noteLocalRecovery(step,step==='backup'?'backup_failed':step==='save'?'save_failed':step==='projection_fetch'?'projection_failed':step==='render'?'render_failed':'matching_failed');return false}
 }
+// One-time, local-only recovery. The selected file never leaves this device.
+const CHAT_RECOVERY_HASH='6673ac08154b64b137773f017837d033b602465772428ece0c5df9db4ced3aa1';
+// Opaque hashes of the eight transcript message identifiers in the offline merge report.
+const CHAT_RECOVERY_IDS=['r-a002e3a7915368535c465a9a5c6baf81','r-b93e7937d51374ed39b51ee810b22aee','r-49d7521e5ca73b4d43dc69da0cd13480','r-a7deb01f6a2d023f34c43b5d9cfe5d86','r-2438272a1e46cd0d0e53d63aca3a436a','r-c78e76f8130b962d5ba0f2c1a40b3836','r-d0a62a941767c24428b7f7b55b14d572','r-be95dd2a7429e3cbddba4d2a2416f03b'];
+let chatRecoveryInspection=null,chatRecoveryPreview=null,chatRecoveryBackupStarted=false,chatRecoveryBusy=false,chatUnlockBackup=null;
+const recoverySame=(left,right)=>JSON.stringify(left)===JSON.stringify(right);
+const recoveryHash=async bytes=>[...new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256',bytes))].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+function sameRecoveryMessageBody(left,right){
+  return left?.role==='assistant'&&right?.role==='assistant'&&left.turnId===right.turnId&&left.content===right.content
+    &&recoverySame(left.toolMessages,right.toolMessages)&&recoverySame(left.thoughtProcess,right.thoughtProcess)&&left.bodyComplete===right.bodyComplete;
+}
+const recoverySessionDetails=session=>Object.fromEntries(Object.entries(session).filter(([key])=>key!=='messages'));
+const unlockMessageContent=message=>message&&typeof message==='object'&&!Array.isArray(message)
+  ?Object.fromEntries(Object.entries(message).filter(([key])=>!['pending','createdAt','delivery','bodyComplete'].includes(key))):null;
+function sameUnlockConversation(left,right){
+  if(!Array.isArray(left)||!Array.isArray(right)||left.length!==1||right.length!==1)return false;
+  const a=left[0],b=right[0];
+  return !!a&&!!b&&recoverySame(recoverySessionDetails(a),recoverySessionDetails(b))
+    &&Array.isArray(a.messages)&&Array.isArray(b.messages)&&a.messages.length>0&&a.messages.length===b.messages.length
+    &&recoverySame(a.messages.slice(0,-1),b.messages.slice(0,-1))
+    &&!!unlockMessageContent(a.messages.at(-1))&&!!unlockMessageContent(b.messages.at(-1))
+    &&recoverySame(unlockMessageContent(a.messages.at(-1)),unlockMessageContent(b.messages.at(-1)));
+}
+function validInterruptedUnlockState(state){
+  if(!validChatRecord(state?.current)||!validChatRecord(state?.previous)
+    ||state.verifiedRevision!==state.previous.revision||state.current.revision<=state.previous.revision
+    ||state.current.revision>=Number.MAX_SAFE_INTEGER
+    ||state.current.activeId!==state.previous.activeId||state.current.provider!==state.previous.provider
+    ||state.current.backupKey!==state.previous.backupKey)return false;
+  try{return sameUnlockConversation(JSON.parse(state.current.sessions),JSON.parse(state.previous.sessions))}catch{return false}
+}
+function recoveryPrefixMatches(live,candidate){
+  if(live.length!==6154||candidate.length!==6162||!recoverySame(live.slice(0,6153),candidate.slice(0,6153)))return false;
+  return recoverySame(live[6153],candidate[6153])||sameRecoveryMessageBody(live[6153],candidate[6153]);
+}
+const recoveryTailTime=record=>{try{const selected=JSON.parse(record.sessions).find(session=>session.id===record.activeId);return selected?.messages?.at(-1)?.createdAt??null}catch{return null}};
+const recoveryMessageCount=record=>{try{return JSON.parse(record.sessions).find(session=>session.id===record.activeId)?.messages?.length??0}catch{return null}};
+async function readRecoveryStorage(){
+  // No version argument: a missing database must not be created by a diagnostic.
+  const request=globalThis.indexedDB?.open('dwell-production-conversation-backups');
+  if(!request)throw new Error('indexeddb_unavailable');
+  const db=await new Promise((resolve,reject)=>{
+    request.onupgradeneeded=()=>{request.transaction?.abort();reject(new Error('database_missing'))};
+    request.onsuccess=()=>resolve(request.result);
+    request.onerror=()=>reject(request.error||new Error('indexeddb_open_failed'));
+    request.onblocked=()=>reject(new Error('indexeddb_blocked'));
+  });
+  try{
+    if(!db.objectStoreNames.contains('chat-state')||!db.objectStoreNames.contains('snapshots'))throw new Error('storage_schema_missing');
+    const state=await new Promise((resolve,reject)=>{
+      const transaction=db.transaction('chat-state','readonly'),store=transaction.objectStore('chat-state');
+      const current=store.get('current'),previous=store.get('previous'),pointer=store.get('verifiedRevision');
+      transaction.oncomplete=()=>resolve({current:current.result,previous:previous.result,verifiedRevision:pointer.result});
+      transaction.onabort=()=>reject(transaction.error||new Error('chat_state_read_aborted'));
+      transaction.onerror=()=>reject(transaction.error||new Error('chat_state_read_failed'));
+    });
+    const backup=state.current?.backupKey?await new Promise((resolve,reject)=>{
+      const transaction=db.transaction('snapshots','readonly'),read=transaction.objectStore('snapshots').get(state.current.backupKey);
+      transaction.oncomplete=()=>resolve(read.result);
+      transaction.onabort=()=>reject(transaction.error||new Error('snapshot_read_aborted'));
+      transaction.onerror=()=>reject(transaction.error||new Error('snapshot_read_failed'));
+    }):null;
+    return {...state,legacyBackup:backup};
+  }finally{db.close()}
+}
+function recoveryStorageHealthy(stored){
+  const currentRecord=stored.current,backup=stored.legacyBackup;
+  return chatStoreMode==='idb'&&!chatStorageUnsaved&&validChatRecord(currentRecord)
+    &&currentRecord.revision===stored.verifiedRevision
+    &&(stored.previous===undefined||validChatRecord(stored.previous))
+    &&(stored.previous===undefined||(stored.previous.revision<currentRecord.revision&&stored.previous.backupKey===currentRecord.backupKey))
+    &&!!backup&&Object.keys(backup).sort().join(',')==='activeId,provider,sessions'
+    &&(localStorage.getItem('dwell.sessions')||'[]')===backup.sessions
+    &&localStorage.getItem('dwell.active')===backup.activeId
+    &&localStorage.getItem('dwell.provider')===backup.provider
+    &&!!committedChatRecord&&recoverySame(currentRecord,committedChatRecord)
+    &&chatRevision===currentRecord.revision&&JSON.stringify(sessions)===currentRecord.sessions
+    &&activeId===currentRecord.activeId&&activeProvider===currentRecord.provider;
+}
+async function inspectChatRecovery(){
+  await chatWriteTail;
+  const stored=await readRecoveryStorage();
+  const diagnostic={
+    mode:chatStoreMode,unsaved:chatStorageUnsaved,currentValid:validChatRecord(stored.current),
+    previousValid:stored.previous===undefined?null:validChatRecord(stored.previous),
+    legacyBackupMatches:!!stored.legacyBackup&&Object.keys(stored.legacyBackup).sort().join(',')==='activeId,provider,sessions'
+      &&(localStorage.getItem('dwell.sessions')||'[]')===stored.legacyBackup.sessions
+      &&localStorage.getItem('dwell.active')===stored.legacyBackup.activeId
+      &&localStorage.getItem('dwell.provider')===stored.legacyBackup.provider,
+    memoryMatchesCurrent:validChatRecord(stored.current)&&JSON.stringify(sessions)===stored.current.sessions&&activeId===stored.current.activeId,
+    currentRevision:stored.current?.revision??null,previousRevision:stored.previous?.revision??null,
+    verifiedRevision:stored.verifiedRevision??null,currentCount:validChatRecord(stored.current)?recoveryMessageCount(stored.current):null,
+    previousCount:validChatRecord(stored.previous)?recoveryMessageCount(stored.previous):null,
+    currentLast:validChatRecord(stored.current)?recoveryTailTime(stored.current):null,
+    previousLast:validChatRecord(stored.previous)?recoveryTailTime(stored.previous):null,
+    memoryCount:current()?.messages?.length??null,memoryLast:current()?.messages?.at(-1)?.createdAt??null,
+    healthy:recoveryStorageHealthy(stored)
+  };
+  chatRecoveryInspection={stored,diagnostic,revision:chatRevision,raw:JSON.stringify(sessions),selectedId:activeId};
+  chatRecoveryPreview=null;chatRecoveryBackupStarted=false;
+  return diagnostic;
+}
+async function loadChatUnlockBackup(file){
+  chatUnlockBackup=null;
+  if(!file||file.size>24*1024*1024)throw new Error('unlock_backup_invalid');
+  const bytes=await file.arrayBuffer();
+  const backup=JSON.parse(new TextDecoder().decode(bytes)),state=backup.chatState,memory=backup.memory;
+  if(!validInterruptedUnlockState(state)||!Array.isArray(memory?.sessions)
+    ||memory.activeId!==state.previous.activeId||memory.activeProvider!==state.previous.provider
+    ||!state.legacyBackup||Object.keys(state.legacyBackup).sort().join(',')!=='activeId,provider,sessions')throw new Error('unlock_backup_invalid');
+  const latest=JSON.parse(state.current.sessions),verified=JSON.parse(state.previous.sessions),inMemory=memory.sessions;
+  if(!sameUnlockConversation(latest,verified)||!sameUnlockConversation(verified,inMemory))throw new Error('unlock_backup_diverged');
+  chatUnlockBackup=backup;
+  return {revision:state.previous.revision,count:inMemory[0].messages.length};
+}
+async function unlockChatStorage(){
+  if(chatRecoveryBusy)throw new Error('recovery_busy');
+  chatRecoveryBusy=true;
+  try{
+    await chatWriteTail;
+    const backup=chatUnlockBackup,state=backup?.chatState,memory=backup?.memory;
+    if(!backup||!$('#chatRecoveryBackupConfirmed')?.checked)throw new Error('backup_not_confirmed');
+    if(!validInterruptedUnlockState(state)||!sameUnlockConversation(JSON.parse(state.previous.sessions),memory?.sessions))throw new Error('unlock_backup_invalid');
+    if(chatStoreMode!=='unavailable'||!chatStorageUnsaved||activeRequests.size)throw new Error('unlock_state_changed');
+    const stored=await readRecoveryStorage();
+    if(!validInterruptedUnlockState(stored)||!sameUnlockConversation(JSON.parse(stored.current.sessions),JSON.parse(state.current.sessions))
+      ||!sameUnlockConversation(JSON.parse(stored.previous.sessions),JSON.parse(state.previous.sessions))
+      ||!sameUnlockConversation(JSON.parse(stored.previous.sessions),memory.sessions)
+      ||!sameUnlockConversation(JSON.parse(stored.previous.sessions),sessions)
+      ||!stored.legacyBackup||Object.keys(stored.legacyBackup).sort().join(',')!=='activeId,provider,sessions'
+      ||(localStorage.getItem('dwell.sessions')||'[]')!==stored.legacyBackup.sessions
+      ||localStorage.getItem('dwell.active')!==stored.legacyBackup.activeId
+      ||localStorage.getItem('dwell.provider')!==stored.legacyBackup.provider
+      ||!recoverySame(committedChatRecord,stored.previous)||chatRevision!==stored.previous.revision
+      ||activeId!==stored.previous.activeId||activeProvider!==stored.previous.provider
+      ||memory.activeId!==activeId||memory.activeProvider!==activeProvider)throw new Error('unlock_state_changed');
+    const originalMemory=JSON.stringify(sessions),originalActive=activeId;
+    const snapshotKey=`chat-unlock-before-commit.${Date.now()}.${generateId()}`;
+    const preserved={version:1,current:stored.current,previous:stored.previous,verifiedRevision:stored.verifiedRevision,memory:{sessions,activeId,activeProvider}};
+    if(!recoverySame(await verifiedProductionConversationBackup(snapshotKey,preserved,()=>{}),preserved))throw new Error('backup_verification_failed');
+    const recheck=await readRecoveryStorage();
+    if(!recoverySame(recheck,stored)||JSON.stringify(sessions)!==originalMemory||activeId!==originalActive||activeRequests.size)throw new Error('unlock_state_changed');
+    const revision=stored.current.revision+1;
+    const record={version:1,revision,backupKey:stored.previous.backupKey,sessions:originalMemory,activeId,provider:activeProvider};
+    await commitChatStateRecord(record,stored.previous,{expectedState:stored});
+    const final=await readRecoveryStorage();
+    if(!recoverySame(final.current,record)||!recoverySame(final.previous,stored.previous)
+      ||final.verifiedRevision!==revision||!recoverySame(final.legacyBackup,stored.legacyBackup))throw new Error('postwrite_verification_failed');
+    if(JSON.stringify(sessions)!==originalMemory||activeId!==originalActive||activeRequests.size){showChatStorageFailure();throw new Error('unlock_state_changed')}
+    chatRevision=revision;committedChatRecord=record;chatStoreMode='idb';chatStorageUnsaved=false;
+    chatRecoveryInspection=null;chatRecoveryPreview=null;chatRecoveryBackupStarted=false;
+    updateStatus();renderAll();
+    return {count:current()?.messages?.length??0,revision,snapshotKey};
+  }finally{chatRecoveryBusy=false}
+}
+function previewChatRecoveryCandidate(candidate){
+  if(!chatRecoveryInspection?.diagnostic.healthy||!recoveryStorageHealthy(chatRecoveryInspection.stored))throw new Error('storage_unavailable');
+  if(!candidate||Object.keys(candidate).sort().join(',')!=='exportedAt,session'||!Array.isArray(candidate.session?.messages)||candidate.session.messages.length!==6162)throw new Error('recovery_file_invalid');
+  const currentSession=current(),candidateMessages=candidate.session.messages;
+  if(!currentSession||candidate.session.id!==currentSession.id||candidate.session.provider!==currentSession.provider)throw new Error('session_mismatch');
+  if(currentSession.messages.length===6162){
+    const existing=currentSession.messages;
+    const appended=existing.slice(6154).map((message,index)=>{
+      if(message.messageId!==CHAT_RECOVERY_IDS[index])return message;
+      const {messageId,...rest}=message;return rest;
+    });
+    if(recoveryPrefixMatches(existing.slice(0,6154),candidateMessages)
+      &&recoverySame(appended,candidateMessages.slice(6154)))return {alreadyComplete:true,additions:[]};
+  }
+  if(!recoveryPrefixMatches(currentSession.messages,candidateMessages))throw new Error('source_changed');
+  const additions=candidateMessages.slice(6154).map((message,index)=>({...message,messageId:CHAT_RECOVERY_IDS[index]}));
+  const seen=new Set();
+  for(const item of additions){
+    const at=new Date(item.createdAt).getTime();
+    if(!['user','assistant'].includes(item.role)||typeof item.content!=='string'||!item.content.trim()||!Number.isFinite(at))throw new Error('recovery_message_invalid');
+    const id=typeof item.messageId==='string'?item.messageId:typeof item.id==='string'?item.id:null;
+    const key=id?`${item.role}:id:${id}`:`${item.role}:${at}:${item.content}`;
+    if(seen.has(key))throw new Error('recovery_duplicate');seen.add(key);
+    if(currentSession.messages.some(existing=>{
+      if(existing.role!==item.role)return false;
+      if(id&&(existing.messageId===id||existing.id===id||existing.toolMessages?.some(tool=>tool.id===id)))return true;
+      const texts=existing.role==='assistant'?[existing.content,...(existing.toolMessages||[]).map(tool=>tool.content)]:[existing.content];
+      const times=existing.role==='assistant'?[existing.createdAt,...(existing.toolMessages||[]).map(tool=>tool.createdAt)]:[existing.createdAt];
+      return texts.some((text,index)=>String(text||'').trim()===item.content.trim()&&Math.abs(new Date(times[index]).getTime()-at)<=120000);
+    }))throw new Error('recovery_duplicate');
+  }
+  return {alreadyComplete:false,additions};
+}
+async function loadChatRecoveryFile(file){
+  if(!file||file.size>12*1024*1024)throw new Error('recovery_file_invalid');
+  const bytes=await file.arrayBuffer(),hash=await recoveryHash(bytes);
+  if(hash!==CHAT_RECOVERY_HASH)throw new Error('recovery_file_mismatch');
+  const candidate=JSON.parse(new TextDecoder().decode(bytes));
+  const plan=previewChatRecoveryCandidate(candidate);
+  chatRecoveryPreview={candidate,plan,revision:chatRevision,raw:JSON.stringify(sessions),selectedId:activeId};
+  return {alreadyComplete:plan.alreadyComplete,missing:plan.additions.length,total:candidate.session.messages.length};
+}
+function downloadChatRecoveryBackup(){
+  if(!chatRecoveryInspection)throw new Error('diagnostic_required');
+  if(chatRevision!==chatRecoveryInspection.revision||JSON.stringify(sessions)!==chatRecoveryInspection.raw||activeId!==chatRecoveryInspection.selectedId)
+    throw new Error('storage_changed');
+  const payload={version:1,createdAt:new Date().toISOString(),chatState:chatRecoveryInspection.stored,memory:{sessions,activeId,activeProvider}};
+  const url=URL.createObjectURL(new Blob([JSON.stringify(payload)],{type:'application/json'}));
+  const link=document.createElement('a');link.href=url;link.download=`qiuqiu-chat-state-before-recovery-${Date.now()}.json`;link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);chatRecoveryBackupStarted=true;
+}
+async function applyChatRecovery(){
+  if(chatRecoveryBusy)throw new Error('recovery_busy');
+  chatRecoveryBusy=true;
+  let commitStarted=false;
+  try{
+    await chatWriteTail;
+    const review=chatRecoveryPreview,inspection=chatRecoveryInspection;
+    if(!review||!inspection||!chatRecoveryBackupStarted||!$('#chatRecoveryBackupConfirmed')?.checked)throw new Error('backup_not_confirmed');
+    if(review.plan.alreadyComplete)throw new Error('already_complete');
+    if(activeRequests.size||chatRevision!==review.revision||activeId!==review.selectedId||JSON.stringify(sessions)!==review.raw)throw new Error('state_changed');
+    const before=await readRecoveryStorage();
+    if(!recoveryStorageHealthy(before)||!recoverySame(before,inspection.stored))throw new Error('storage_changed');
+    const plan=previewChatRecoveryCandidate(review.candidate);
+    if(plan.alreadyComplete||plan.additions.length!==8)throw new Error('recovery_plan_changed');
+    // A durable, separate snapshot also tests IndexedDB writes without changing chat-state.
+    const backupKey=`chat-recovery-before-commit.${Date.now()}.${generateId()}`;
+    const backup={version:1,current:before.current,previous:before.previous??null,verifiedRevision:before.verifiedRevision};
+    const saved=await verifiedProductionConversationBackup(backupKey,backup,()=>{});
+    if(!recoverySame(saved,backup))throw new Error('backup_verification_failed');
+    const afterBackup=await readRecoveryStorage();
+    if(!recoveryStorageHealthy(afterBackup)||!recoverySame(afterBackup,before)||activeRequests.size||chatRevision!==review.revision||JSON.stringify(sessions)!==review.raw)throw new Error('storage_changed');
+    const mergedSessions=sessions.map(session=>session.id===review.selectedId?{...session,messages:[...session.messages,...plan.additions]}:session);
+    const mergedRaw=JSON.stringify(mergedSessions),originalRevision=chatRevision;
+    // Any later normal save must include these additions, never the old snapshot.
+    // If persistence fails, retain every message in memory and show the unsaved state.
+    commitStarted=true;sessions=mergedSessions;
+    if(!await queueChatStateWrite({sessions:mergedRaw,activeId,provider:activeProvider},{expectedRevision:originalRevision}))throw new Error('save_failed');
+    const final=await readRecoveryStorage(),restored=validChatRecord(final.current)?JSON.parse(final.current.sessions):null;
+    if(chatRevision!==originalRevision+1||JSON.stringify(sessions)!==mergedRaw)throw new Error('state_changed');
+    if(final.verifiedRevision!==originalRevision+1||final.current?.sessions!==mergedRaw||!recoverySame(final.previous,before.current)||!restored
+      ||restored.find(session=>session.id===review.selectedId)?.messages?.length!==6162
+      ||!recoverySame(restored.find(session=>session.id===review.selectedId)?.messages,[...JSON.parse(review.raw).find(session=>session.id===review.selectedId).messages,...plan.additions])
+      ||!recoverySame(restored.filter(session=>session.id!==review.selectedId),JSON.parse(review.raw).filter(session=>session.id!==review.selectedId)))
+      throw new Error('postwrite_verification_failed');
+    chatRecoveryPreview=null;renderAll();
+    return {restored:8,total:6162,backupKey};
+  }catch(error){if(commitStarted)showChatStorageFailure();throw error}
+  finally{chatRecoveryBusy=false}
+}
+function mountChatRecoveryControls(){
+  if($('#chatRecoveryControls'))return;
+  if(typeof $('#localRecoveryDiagnosticDetails').insertAdjacentElement!=='function')return;
+  const box=document.createElement('div');box.id='chatRecoveryControls';
+  box.style.cssText='padding:12px 18px;display:grid;gap:10px;font-size:16px;line-height:1.5';
+  box.style.gridTemplateColumns='minmax(0,1fr)';box.style.width='100%';box.style.minWidth='0';
+  box.innerHTML='<button type="button" id="chatRecoveryInspect">检查本机存储（只读）</button><button type="button" id="chatRecoveryDownload" disabled>下载完整本机备份</button><label>选择完整本机状态备份 JSON<input id="chatUnlockFile" type="file" accept=".json,application/json"></label><label><input id="chatRecoveryBackupConfirmed" type="checkbox">我已确认本机备份保存在“文件”中</label><button type="button" id="chatUnlockApply">校验并恢复保存能力</button><label>选择本次合并候选 JSON<input id="chatRecoveryFile" type="file" accept=".json,application/json"></label><button type="button" id="chatRecoveryApply">确认追加缺失消息</button><div id="chatRecoveryStatus" role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></div><div id="chatRecoveryUiEvents" role="log" aria-label="本机恢复操作诊断" style="font-size:12px;color:#777;white-space:pre-wrap"></div>';
+  box.querySelectorAll('button').forEach(button=>{button.style.width='100%';button.style.minHeight='44px';button.style.display='block';button.style.whiteSpace='normal';button.style.wordBreak='normal';button.style.overflowWrap='normal';button.style.gridTemplateColumns='none';button.style.textAlign='center'});
+  $('#localRecoveryDiagnosticDetails').insertAdjacentElement('afterend',box);
+  const status=message=>{$('#chatRecoveryStatus').textContent=message};
+  const event=(action,stage,error)=>{try{const key='dwell.chat-recovery-ui-events.v1',past=JSON.parse(sessionStorage.getItem(key)||'[]'),entry={at:Date.now(),action,stage,...(error?{error:failure(error)}:{})},rows=[...(Array.isArray(past)?past:[]),entry].slice(-24);sessionStorage.setItem(key,JSON.stringify(rows));$('#chatRecoveryUiEvents').textContent=rows.slice(-6).map(row=>`${new Date(row.at).toLocaleTimeString()} ${row.action}: ${row.stage}${row.error?' ('+row.error+')':''}`).join('\n')}catch{}};
+  const failure=error=>{
+    const known=new Set(['storage_unavailable','recovery_file_invalid','session_mismatch','source_changed','recovery_message_invalid','recovery_duplicate','recovery_file_mismatch','unlock_backup_invalid','unlock_backup_mismatch','unlock_backup_diverged','unlock_state_changed','backup_not_confirmed','already_complete','state_changed','storage_changed','recovery_plan_changed','backup_verification_failed','save_failed','postwrite_verification_failed','recovery_busy']);
+    return known.has(error?.message)?error.message:error?.name||'Error';
+  };
+  $('#chatRecoveryInspect').onclick=async()=>{event('inspect','click');event('inspect','start');try{const result=await inspectChatRecovery();status(`当前：${result.currentCount??'未知'} 条，修订 ${result.currentRevision??'无'}，末尾 ${result.currentLast??'未知'}\n上一版：${result.previousCount??'未知'} 条，修订 ${result.previousRevision??'无'}，末尾 ${result.previousLast??'未知'}\n校验指针：${result.verifiedRevision??'无'}；内存：${result.memoryCount??'未知'} 条\n当前有效：${result.currentValid?'是':'否'}；上一版有效：${result.previousValid===null?'无':result.previousValid?'是':'否'}；原始备份匹配：${result.legacyBackupMatches?'是':'否'}；内存匹配：${result.memoryMatchesCurrent?'是':'否'}\n保存状态：${result.mode}/${result.unsaved?'未保存':'正常'}；${result.healthy?'可继续预览':'存储异常，先备份并核对解锁文件'}`);$('#chatRecoveryDownload').disabled=false;$('#chatRecoveryBackupConfirmed').checked=false;event('inspect','success')}catch(error){status(`读取失败：${error?.name||'Error'}；停止恢复`);event('inspect','error',error)}};
+  $('#chatRecoveryDownload').onclick=()=>{try{downloadChatRecoveryBackup();status('已请求下载完整本机备份。请在“文件”中确认保存后，再勾选确认框。')}catch(error){status(`备份失败：${error?.name||'Error'}`)}};
+  $('#chatUnlockFile').onchange=async inputEvent=>{try{const result=await loadChatUnlockBackup(inputEvent.target.files?.[0]);status(`已核对完整备份：${result.count} 条，上一已校验修订 ${result.revision}。确认新备份已保存后，可尝试恢复保存能力。`)}catch(error){chatUnlockBackup=null;status(`备份不匹配：${failure(error)}；未写入聊天记录`)}};
+  $('#chatUnlockApply').onclick=async()=>{event('unlock','click');const button=$('#chatUnlockApply');button.disabled=true;event('unlock','start');try{const result=await unlockChatStorage();status(`保存能力已恢复：${result.count} 条，修订 ${result.revision}。请重新检查本机存储、下载新备份，再选择合并候选。`);event('unlock','success')}catch(error){status(`解锁停止：${failure(error)}。请保持页面打开，不要重复点击或刷新。`);event('unlock','error',error)}finally{button.disabled=false}};
+  $('#chatRecoveryFile').onchange=async inputEvent=>{try{const result=await loadChatRecoveryFile(inputEvent.target.files?.[0]);status(result.alreadyComplete?'已是 6162 条，无需导入':`候选共 ${result.total} 条；核对后仅追加 ${result.missing} 条。请先下载并确认本机备份。`)}catch(error){chatRecoveryPreview=null;status(`预览失败：${failure(error)}；未写入聊天记录`)}};
+  $('#chatRecoveryApply').onclick=async()=>{event('append','click');const button=$('#chatRecoveryApply');button.disabled=true;event('append','start');try{const result=await applyChatRecovery();status(`恢复完成：新增 ${result.restored} 条，重新读取确认共 ${result.total} 条。`);showLocalRecoveryDiagnostic();event('append','success')}catch(error){status(`恢复停止：${failure(error)}。请保持页面打开，不要重复点击或刷新。`);event('append','error',error)}finally{button.disabled=false}};
+}
 function current(){ return sessions.find(s=>s.id===activeId); }
+let viewfinderSyncCursor=0,viewfinderSyncPolling=false;
+async function pollViewfinderSync(){
+  if(chatStoreMode!=='idb'||chatStorageUnsaved)return false;
+  const response=await fetch(`/api/chat/viewfinder-sync/events?after=${viewfinderSyncCursor}`,{credentials:'same-origin',cache:'no-store'});
+  if(!response.ok)return false;
+  const feed=await response.json();
+  if(!Array.isArray(feed.events))return false;
+  if(Number.isSafeInteger(feed.latestId)&&feed.latestId<viewfinderSyncCursor)viewfinderSyncCursor=0;
+  const target=current()&&profile(current().provider).runtime==='claude_tmux'?current():sessions.find(session=>profile(session.provider).runtime==='claude_tmux');
+  if(!target)return feed.enabled===true;
+  let changed=false;
+  for(const event of feed.events){
+    if(!Number.isSafeInteger(event.id)||event.id<=viewfinderSyncCursor)continue;
+    if(event.type==='user_message'&&typeof event.text==='string'&&event.clientRequestId){
+      if(!target.messages.some(message=>message.role==='user'&&message.turnId===event.clientRequestId)){
+        target.messages.push({role:'user',content:event.text,turnId:event.clientRequestId,createdAt:Date.now(),screenpeekSync:true});changed=true;
+      }
+    }else if(event.type==='assistant_message'&&event.clientRequestId&&event.messageId&&typeof event.text==='string'){
+      let out=target.messages.find(message=>message.role==='assistant'&&(message.screenpeekRequestId===event.clientRequestId||message.delivery?.clientRequestId===event.clientRequestId));
+      if(!out){out={role:'assistant',content:'',pending:false,screenpeekRequestId:event.clientRequestId,createdAt:Date.now(),toolMessages:[]};target.messages.push(out);changed=true}
+      out.toolMessages??=[];
+      if(!out.toolMessages.some(item=>item.id===event.messageId)){out.toolMessages.push({id:event.messageId,role:'assistant',content:event.text,source:'tool',turnId:event.turnId||'',createdAt:Date.now()});changed=true}
+    }else if(['turn_done','turn_stopped','turn_error'].includes(event.type)&&event.clientRequestId){
+      const out=target.messages.find(message=>message.role==='assistant'&&message.screenpeekRequestId===event.clientRequestId);
+      if(out&&out.pending){out.pending=false;changed=true}
+    }
+    viewfinderSyncCursor=event.id;
+  }
+  if(changed){persist();if(target===current()&&activeAppView==='chat')renderAll(messagesNearBottom())}
+  return feed.enabled===true;
+}
+function startViewfinderSyncPolling(){
+  if(viewfinderSyncPolling)return;
+  viewfinderSyncPolling=true;
+  const cycle=async()=>{
+    let enabled=false;
+    try{enabled=await pollViewfinderSync()}catch{}
+    setTimeout(cycle,enabled?1500:5000);
+  };
+  void cycle();
+}
 function restoreStoredConversation(){
   const existing=current();if(existing)return existing;
   const stored=sessions.find(session=>profile(session.provider).runtime==='claude_tmux')||sessions[0];if(!stored)return null;
@@ -446,6 +781,7 @@ function startContinuation(){ const source=sessions.find(s=>s.id===continuationS
 function backupContinuation(){ const s=sessions.find(x=>x.id===continuationSourceId); if(!s)return; const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),session:s},null,2)],{type:'application/json'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`dwell-${s.title.replace(/[\\/:*?"<>|]/g,'-').slice(0,36)}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); toast('原会话已导出'); }
 const messageViewKeys=new WeakMap();let nextMessageViewKey=0;
 function messageViewKey(message){if(!messageViewKeys.has(message))messageViewKeys.set(message,String(++nextMessageViewKey));return messageViewKeys.get(message)}
+function stickerViewKey(message){return `${message.role}:${message.id||message.messageId||message.turnId||messageViewKey(message)}:${message.sticker.id}`}
 const safeImageId=id=>/^img_[A-Za-z0-9_-]{43}$/.test(String(id||'')),safePhotoId=id=>/^photo_[A-Za-z0-9_-]{32}$/.test(String(id||''));
 function safeMessageImages(images){return Array.isArray(images)?images.filter(image=>safeImageId(image?.imageId)||safePhotoId(image?.photoId)).slice(0,4).map(image=>({...(safeImageId(image.imageId)?{imageId:image.imageId}:{photoId:image.photoId}),mime:['image/jpeg','image/png','image/webp'].includes(image.mime)?image.mime:'image/jpeg',width:Number(image.width)||0,height:Number(image.height)||0,byteSize:Number(image.byteSize)||0,note:String(image.note||image.caption||'').slice(0,1000),albumId:String(image.albumId||'').slice(0,80),albumName:String(image.albumName||'').slice(0,80),albumMood:String(image.albumMood||'').slice(0,24),savedAt:Number(image.savedAt)||0,capturedAt:Number(image.capturedAt)||0,sourceType:['chat','camera','upload'].includes(image.sourceType)?image.sourceType:'chat',sourceConversationId:String(image.sourceConversationId||'').slice(0,128),sourceTurnId:String(image.sourceTurnId||'').slice(0,128),sourceMessageId:String(image.sourceMessageId||'').slice(0,128),savedBy:['assistant','user'].includes(image.savedBy)?image.savedBy:'assistant',savedByDisplay:String(image.savedByDisplay||'').slice(0,80),tags:Array.isArray(image.tags)?image.tags.map(String).slice(0,24):[],reactions:Array.isArray(image.reactions)?image.reactions.map(String).slice(0,24):[]})):[]}
 function safeAlbumSaved(value){const photo=safeMessageImages([value?.photo||value])[0];return photo?.photoId?{type:'album_saved',photo}:null}
@@ -465,19 +801,22 @@ function visibleMessageSearchText(message){
   if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(ordinaryAssistantPresentationText(message.content));
   return visible.join('\n');
 }
-function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.toolMessages?.length||!message?.pending&&message?.thoughtProcess?.items?.length)}
+function hasVisibleChatPresentation(message){return !!(visibleMessageSearchText(message).trim()||message?.sticker?.id||safeMessageImages(message?.images).length||message?.albumEvents?.some(value=>safeAlbumSaved(value))||message?.delivery?.notice||message?.toolMessages?.length||!message?.pending&&message?.thoughtProcess?.items?.length)}
 function localDayKey(value){const date=value instanceof Date?value:new Date(value);return Number.isFinite(date.getTime())?`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`:''}
 function visibleMessageTimestamp(message){const raw=message?.createdAt,date=typeof raw==='number'?new Date(raw):new Date(String(raw||''));return hasVisibleChatPresentation(message)&&Number.isFinite(date.getTime())?date.getTime():null}
 function dayDividerMarkup(value){const date=new Date(value),pad=n=>String(n).padStart(2,'0');return `<div class="chat-day-divider" data-day="${localDayKey(date)}"><span></span><time>${date.getMonth()+1}月${date.getDate()}日 · ${pad(date.getHours())}:${pad(date.getMinutes())}</time><span></span></div>`}
 function findChatSearchResults(messages,query){const needle=String(query||'').trim().normalize('NFC').toLocaleLowerCase();if(!needle)return[];return (messages||[]).flatMap((message,index)=>visibleMessageSearchText(message).normalize('NFC').toLocaleLowerCase().includes(needle)?[{index,text:visibleMessageSearchText(message)}]:[])}
 function renderChatMessage(message,previous,sourceIndex=-1){
   const albumEvents=(message.albumEvents||[]).map(safeAlbumSaved).filter(Boolean);
-  if(message.role==='assistant'&&!ordinaryAssistantPresentationText(message.content).trim()&&!message.images?.length&&!message.toolMessages?.length&&!message.delivery?.notice&&!albumEvents.length&&(message.pending||!message.thoughtProcess?.items?.length))return '';
+  const emptyAssistant=message.role==='assistant'&&!ordinaryAssistantPresentationText(message.content).trim()&&!message.images?.length&&!message.sticker?.id&&!message.toolMessages?.length&&!message.delivery?.notice&&!albumEvents.length&&!message.thoughtProcess?.items?.length;
+  if(emptyAssistant&&(message.pending||message.delivery))return assistantTypingActive(message)?renderTypingIndicator(message,sourceIndex):'';
   let body='';
-  if(!message.toolMessages?.length){if(message.content||message.images?.length||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(message,previous,null,sourceIndex)}
+  if(!message.toolMessages?.length){if(!albumEvents.length||message.content||message.images?.length||message.sticker?.id||message.thoughtProcess?.items?.length||message.delivery?.notice)body=renderMessageRow(message,previous,null,sourceIndex)}
   else{const visible=message.toolMessages.map((item,index)=>index?item:{...item,thoughtProcess:message.thoughtProcess,turnId:message.turnId});if(message.content&&message.bodyComplete&&!ordinaryBodyIsDuplicate(message))visible.push(message);body=visible.map((item,index)=>renderMessageRow(item,index?visible[index-1]:previous,index===visible.length-1?message:null,sourceIndex)).join('')}
-  return body+albumEvents.map(event=>albumSavedMarkup(event,sourceIndex)).join('');
+  return body+albumEvents.map(event=>albumSavedMarkup(event,sourceIndex)).join('')+(assistantTypingActive(message)?renderTypingIndicator(message,sourceIndex):'');
 }
+function assistantTypingActive(message){return message.role==='assistant'&&message.pending===true&&message.bodyComplete!==true&&message.delivery?.phase!=='finished'}
+function renderTypingIndicator(message,sourceIndex){return `<article data-typing-for="${messageViewKey(message)}" data-message-index="${sourceIndex}" class="message assistant-typing" role="status" aria-label="秋秋正在输入"><div class="avatar${assistantAvatarUrl?' has-image':''}" aria-hidden="true">${assistantMessageAvatarMarkup()}</div><div class="bubble typing-bubble" aria-hidden="true"><span></span><span></span><span></span></div></article>`}
 function renderMessageRow(message,previous,connectionOwner=null,sourceIndex=-1){
   const user=message.role==='user',newGroup=!previous||previous.role!==message.role||(!user&&message.turnId&&previous.turnId&&message.turnId!==previous.turnId);
   const date=message.createdAt?new Date(message.createdAt):null;
@@ -487,14 +826,33 @@ function renderMessageRow(message,previous,connectionOwner=null,sourceIndex=-1){
   const thought=message.thoughtProcess?.items?.length&&!user,cloud=thought?`<button type="button" class="thought-cloud" data-thought-turn="${escapeHtml(message.turnId||'')}" aria-label="View thought process">${chatIcons.cloud}</button>`:'';
   const stamp=newGroup?`<div class="message-time ${user?'user':''}" aria-label="${user?'你':'秋秋'} · ${time}"><span class="time-dot"></span><span>${time}</span>${cloud}</div>`:'';
   const content=!user&&message.source!=='tool'?ordinaryAssistantPresentationText(message.content):message.content,images=safeMessageImages(message.images),imageMarkup=messageImagesMarkup(images);
-  if(!user&&thought&&!content&&!images.length&&!message.delivery?.notice)return stamp;
+  const sticker=message.sticker&&/^stk_[A-Za-z0-9_-]{32}$/.test(message.sticker.id)?message.sticker:null;
+  if(sticker&&!content)return stamp+`<article data-message-view="${messageViewKey(message)}" data-sticker-key="${escapeHtml(stickerViewKey(message))}" data-message-index="${sourceIndex}" class="message ${user?'user':''} sticker-message"><div class="avatar${(user?userAvatarUrl:assistantAvatarUrl)?' has-image':''}" aria-hidden="true">${user?userMessageAvatarMarkup():assistantMessageAvatarMarkup()}</div><img src="/api/stickers/${sticker.id}/media" alt="${escapeHtml(sticker.name||'动态表情')}" width="116" height="116" loading="lazy"></article>`;
+  if(!user&&!content&&!images.length&&!message.delivery?.notice)return stamp+`<article data-message-view="${messageViewKey(message)}" data-message-index="${sourceIndex}" class="message empty-assistant"><div class="avatar${assistantAvatarUrl?' has-image':''}" aria-hidden="true">${assistantMessageAvatarMarkup()}</div></article>`;
   const presented=content?(message.pending&&!user?escapeHtml(content):images.length?`<div class="message-text">${markup(content)}</div>`:markup(content)):'';
   return stamp+`<article data-message-view="${messageViewKey(message)}" data-message-index="${sourceIndex}" class="message ${user?'user':''}"><div class="avatar${(user?userAvatarUrl:assistantAvatarUrl)?' has-image':''}" aria-hidden="true">${user?userMessageAvatarMarkup():assistantMessageAvatarMarkup()}</div><div class="bubble ${message.pending?'thinking':''} ${images.length?'has-images':''} ${images.length&&!content?'image-only':''}">${imageMarkup}${message.pending&&!user?`<span data-stream-text>${presented}</span>`:presented}${connectionMarkup(connectionOwner||message)}</div></article>`;
 }
 function bindAlbumSavedCards(){$$('[data-album-saved-photo]').forEach(button=>button.onclick=()=>openPhotoDetail({photoId:button.dataset.albumSavedPhoto},'chat').catch(error=>toast(error.message)))}
 function renderChatHistory(messages){let previousVisibleDay='',seenVisible=false;return messages.map((message,index)=>{let divider='';const timestamp=visibleMessageTimestamp(message),day=timestamp?localDayKey(timestamp):'';if(day){if(seenVisible&&previousVisibleDay&&day!==previousVisibleDay)divider=dayDividerMarkup(timestamp);previousVisibleDay=day;seenVisible=true}return divider+renderChatMessage(message,index?messages[index-1]:null,index)}).join('')}
+function renderMessageMarkup(box,html){
+  if(!html.includes('data-sticker-key=')&&!box.querySelector?.('[data-sticker-key]')){box.innerHTML=html;return}
+  const template=document.createElement('template');template.innerHTML=html;
+  if(!template.content?.childNodes||typeof box.insertBefore!=='function'){box.innerHTML=html;return}
+  const stickers=new Map([...box.querySelectorAll('[data-sticker-key]')].map(node=>[node.getAttribute('data-sticker-key'),node]));
+  let cursor=box.firstChild;
+  for(const fresh of [...template.content.childNodes]){
+    const key=fresh.nodeType===1?fresh.getAttribute('data-sticker-key'):null,prior=key?stickers.get(key):null;
+    let node=fresh;
+    if(prior&&prior.querySelector('img')?.getAttribute('src')===fresh.querySelector('img')?.getAttribute('src')){
+      node=prior;stickers.delete(key);prior.setAttribute('data-message-index',fresh.getAttribute('data-message-index'));prior.querySelector('img').alt=fresh.querySelector('img').alt;
+    }else if(cursor?.nodeType===fresh.nodeType&&(cursor.nodeType===3?cursor.textContent===fresh.textContent:cursor.outerHTML===fresh.outerHTML))node=cursor;
+    if(node===cursor){cursor=cursor.nextSibling;continue}
+    box.insertBefore(node,cursor);
+  }
+  while(cursor){const next=cursor.nextSibling;box.removeChild(cursor);cursor=next}
+}
 let lastChatRenderOutcome='not_rendered';
-function renderMessages(scrollToEnd=true){ const snapshot=timelineScrollSnapshot(); try{ const box=$('#messages'),s=current(); if(s?.bridge&&!s.messages.length){lastChatRenderOutcome='not_onboarding';box.innerHTML=`<div class="continuation-welcome"><span>续窗已接好</span><h2>${escapeHtml(s.title)}</h2><p>原会话仍完整保留。第一条消息发送时，启动包会作为背景交给当前模型。</p><button id="reviewBridge">查看或修改启动包</button></div>`; $('#reviewBridge').onclick=openContinuation; $('#chatTitle').textContent=s.title;return} if(!s||!s.messages.length){lastChatRenderOutcome=!s?'no_current_session':'current_session_empty';box.innerHTML='<div class="welcome"><div class="orb"><span></span></div><h2>有些话，不必急着说完。</h2><p>接上你常用的模型。对话会留在这台浏览器里，慢慢长成日子。</p><button id="welcomeSetup">接一条路进来 →</button></div>'; $('#welcomeSetup').onclick=openSettings; $('#chatTitle').textContent='今天，也在这里';return} lastChatRenderOutcome='not_onboarding';box.innerHTML=(s.bridge?'<div class="bridge-marker">◇ 已携带续窗启动包</div>':'')+renderChatHistory(s.messages); bindRecoveryActions();bindThoughtClouds();bindAlbumSavedCards();if(chatSearchState.active)applyChatSearchPresentation(); $('#chatTitle').textContent=s.title; if(scrollToEnd&&!chatSearchState.active){setViewportBottomAnchor(true);scrollMessagesToBottom(box)} }finally{renderShoppingApprovalCards();if(!scrollToEnd)restoreTimelineScroll(snapshot)}}
+function renderMessages(scrollToEnd=true){ const snapshot=timelineScrollSnapshot(); try{ const box=$('#messages'),s=current(); if(s?.bridge&&!s.messages.length){lastChatRenderOutcome='not_onboarding';box.innerHTML=`<div class="continuation-welcome"><span>续窗已接好</span><h2>${escapeHtml(s.title)}</h2><p>原会话仍完整保留。第一条消息发送时，启动包会作为背景交给当前模型。</p><button id="reviewBridge">查看或修改启动包</button></div>`; $('#reviewBridge').onclick=openContinuation; $('#chatTitle').textContent=s.title;return} if(!s||!s.messages.length){lastChatRenderOutcome=!s?'no_current_session':'current_session_empty';box.innerHTML='<div class="welcome"><div class="orb"><span></span></div><h2>有些话，不必急着说完。</h2><p>接上你常用的模型。对话会留在这台浏览器里，慢慢长成日子。</p><button id="welcomeSetup">接一条路进来 →</button></div>'; $('#welcomeSetup').onclick=openSettings; $('#chatTitle').textContent='今天，也在这里';return} lastChatRenderOutcome='not_onboarding';renderMessageMarkup(box,(s.bridge?'<div class="bridge-marker">◇ 已携带续窗启动包</div>':'')+renderChatHistory(s.messages)); bindRecoveryActions();bindThoughtClouds();bindAlbumSavedCards();if(chatSearchState.active)applyChatSearchPresentation(); $('#chatTitle').textContent=s.title; if(scrollToEnd&&!chatSearchState.active){setViewportBottomAnchor(true);scrollMessagesToBottom(box)} }finally{renderShoppingApprovalCards();if(!scrollToEnd)restoreTimelineScroll(snapshot)}}
 const chatSearchState={active:false,query:'',results:[],position:-1,scrollTop:0,selectedDay:'',calendarYear:0,calendarMonth:0};let chatSearchTimer=0;
 function clearSearchMarks(){for(const mark of $$('#messages mark.chat-search-mark'))mark.replaceWith?.(mark.textContent);for(const node of $$('#messages .search-current'))node.classList.remove('search-current')}
 function markText(root,query){if(!root||!query||!document.createTreeWalker||typeof NodeFilter==='undefined')return;const needle=query.normalize('NFC').toLocaleLowerCase(),walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT),nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);for(const node of nodes){const text=node.nodeValue||'',lower=text.normalize('NFC').toLocaleLowerCase();let cursor=0,hit=lower.indexOf(needle);if(hit<0)continue;const fragment=document.createDocumentFragment();while(hit>=0){fragment.append(text.slice(cursor,hit));const mark=document.createElement('mark');mark.className='chat-search-mark';mark.textContent=text.slice(hit,hit+query.length);fragment.append(mark);cursor=hit+query.length;hit=lower.indexOf(needle,cursor)}fragment.append(text.slice(cursor));node.replaceWith(fragment)}}
@@ -642,9 +1000,14 @@ function applyTurnEvent(out,event){
   if(event.type==='turn_started'){activeTurnId=event.turnId||'';out.turnId=event.turnId;}
   if(event.type==='user_images')return;
   if(event.type==='assistant_message'){
-    if(!out.turnId||event.turnId!==out.turnId||event.source!=='tool'||typeof event.text!=='string'||!event.text.trim()||typeof event.messageId!=='string')return;
+    if(!out.turnId||event.turnId!==out.turnId||event.source!=='tool'||typeof event.text!=='string'||typeof event.messageId!=='string')return;
     out.toolMessages??=[];
     if(!out.toolMessages.some(item=>item.id===event.messageId))out.toolMessages.push({id:event.messageId,role:'assistant',content:event.text,images:safeMessageImages(event.images),source:'tool',turnId:out.turnId,createdAt:out.createdAt});
+  }
+  if(event.type==='assistant_sticker'){
+    if(!out.turnId||event.turnId!==out.turnId||event.source!=='tool'||typeof event.messageId!=='string'||!/^stk_[A-Za-z0-9_-]{32}$/.test(event.sticker?.id||''))return;
+    out.toolMessages??=[];
+    if(!out.toolMessages.some(item=>item.id===event.messageId))out.toolMessages.push({id:event.messageId,role:'assistant',content:'',sticker:{id:event.sticker.id,name:String(event.sticker.name||'动态表情').slice(0,80)},source:'tool',turnId:out.turnId,createdAt:Date.now()});
   }
   if(event.type==='album_saved'&&event.turnId===out.turnId){const saved=safeAlbumSaved(event);if(saved){out.albumEvents??=[];if(!out.albumEvents.some(item=>item.photo?.photoId===saved.photo.photoId))out.albumEvents.push(saved);persist()}}
   if(event.type==='thought_process'&&event.turnId===out.turnId){out.thoughtProcess={turnId:event.turnId,hasThoughtProcess:!!event.items?.length,items:Array.isArray(event.items)?event.items:[]};persist();if(openThoughtTurn===event.turnId)try{renderThoughtSheet(out.thoughtProcess)}catch{}}
@@ -654,6 +1017,21 @@ function applyTurnEvent(out,event){
   if(event.type==='turn_error'){const error=new Error(event.error||'回复中断');error.turnError=true;throw error}
 }
 function renderAttachmentDraft(){const box=$('#attachmentDraft');box.hidden=!draftImages.length&&!pendingImageUploads;const images=draftImages.map((image,index)=>`<div><img src="/api/chat/images/${image.imageId}/thumbnail" alt="待发送图片 ${index+1}"><button type="button" data-remove-image="${image.imageId}" aria-label="移除图片">×</button></div>`).join('');const loading=Array.from({length:pendingImageUploads},()=>'<div class="attachment-loading" aria-label="图片上传中"></div>').join('');box.innerHTML=images+loading;$$('[data-remove-image]').forEach(button=>button.onclick=()=>{draftImages=draftImages.filter(image=>image.imageId!==button.dataset.removeImage);renderAttachmentDraft();updateStatus();syncComposerHeight()});syncComposerHeight()}
+let editingSticker=null,stickerEditMode=false,stickerPanelOpen=false,stickerDragStart=null,stickerItemsLoaded=false,stickerLoadPromise=null;
+function renderStickerDraft(){const box=$('#stickerDraft');if(!box)return;box.hidden=!pendingSticker;box.innerHTML=pendingSticker?`<img src="/api/stickers/${pendingSticker.id}/media" alt="${escapeHtml(pendingSticker.name)}" width="52" height="52"><button type="button" id="removeSticker" aria-label="移除待发表情">×</button>`:'';if(pendingSticker)$('#removeSticker').onclick=()=>{pendingSticker=null;renderStickerDraft();updateStatus()};syncComposerHeight()}
+function closeStickerPanel(){if(!stickerPanelOpen)return;stickerPanelOpen=false;document.documentElement.classList.remove('sticker-panel-open');const panel=$('#stickerPanel');panel.classList.remove('on');setTimeout(()=>{if(!stickerPanelOpen){panel.hidden=true;document.documentElement.style.removeProperty('--sticker-chat-bottom')}},180);$('#emojiButton').setAttribute('aria-expanded','false');scheduleVisualViewportSync()}
+function renderStickerPanel(){const grid=$('#stickerPanelGrid');if(!grid)return;const mine=stickerItems.filter(item=>item.owner==='user');grid.innerHTML=`<button type="button" class="sticker-panel-add" id="manageStickers" aria-label="管理表情包">＋</button>`+mine.map(item=>`<button type="button" class="sticker-panel-item" data-panel-sticker="${item.id}" aria-label="${escapeHtml(item.name)}"><img src="/api/stickers/${item.id}/media" alt="${escapeHtml(item.name)}" loading="lazy"></button>`).join('');$('#manageStickers').onclick=()=>void openStickers();$$('[data-panel-sticker]').forEach(button=>button.onclick=()=>{pendingSticker=stickerItems.find(item=>item.id===button.dataset.panelSticker);renderStickerDraft();updateStatus();closeStickerPanel()})}
+async function toggleStickerPanel(){if(stickerPanelOpen){closeStickerPanel();return}if(activeAppView!=='chat')return;const visual=globalThis.visualViewport,mobile=globalThis.matchMedia?.('(pointer:coarse)')?.matches,screen=Math.max(document.documentElement.clientHeight||0,globalThis.innerHeight||0,mobile?globalThis.screen?.height||0:0),viewportBottom=Math.round((visual?.offsetTop||0)+(visual?.height||screen)),recordedBottom=parseFloat(document.documentElement.style.getPropertyValue('--vv-bottom'))||viewportBottom,visibleBottom=Math.min(viewportBottom,recordedBottom),defaultHeight=Math.min(360,Math.max(270,Math.round(screen*.39))),bottom=visibleBottom<screen-180?visibleBottom:screen-defaultHeight;document.documentElement.style.setProperty('--sticker-chat-bottom',`${bottom}px`);document.documentElement.classList.add('sticker-panel-open');stickerPanelOpen=true;const panel=$('#stickerPanel');panel.hidden=false;const frame=globalThis.requestAnimationFrame||((callback)=>setTimeout(callback,16));frame(()=>{if(stickerPanelOpen)panel.classList.add('on')});$('#emojiButton').setAttribute('aria-expanded','true');if(document.activeElement===$('#input'))$('#input').blur();if(!stickerItemsLoaded)renderStickerPanel();try{await loadStickers()}catch(error){toast(error.message)}scheduleVisualViewportSync()}
+function closeStickers(){const sheet=$('#stickerSheet');sheet.classList.remove('on','expanded','dragging');sheet.style.removeProperty('--sticker-drag');$('#stickerEditor').hidden=true;$('#shade').classList.remove('on');stickerEditMode=false;$('#editStickers').classList.remove('on')}
+function showStickerEditor(item=null){editingSticker=item;const form=$('#stickerForm');form.reset();$('#stickerName').value=item?.name||'';$('#stickerDescription').value=item?.description||'';$('#stickerTags').value=item?.emotion_tags?.join('，')||'';$('#stickerFile').required=!item;$('#stickerFileRow').hidden=!!item;$('#stickerEditorTitle').textContent=item?'编辑表情':'添加表情';$('#stickerEditor').hidden=false;updateStickerSave()}
+function renderStickerGrid(){const grid=$('#stickerGrid'),items=stickerItems.filter(item=>item.owner===stickerTab);grid.innerHTML=items.map(item=>`<div class="sticker-tile"><button type="button" data-manage-sticker="${item.id}" aria-label="${escapeHtml(item.name)}${stickerEditMode?'，编辑':''}"><img src="/api/stickers/${item.id}/media" alt="${escapeHtml(item.name)}" loading="lazy"></button>${stickerEditMode?`<button type="button" class="sticker-tile-delete" data-delete-sticker="${item.id}" aria-label="删除 ${escapeHtml(item.name)}">×</button>`:''}</div>`).join('');$$('[data-manage-sticker]').forEach(button=>button.onclick=()=>{if(stickerEditMode)showStickerEditor(stickerItems.find(item=>item.id===button.dataset.manageSticker))});$$('[data-delete-sticker]').forEach(button=>button.onclick=async()=>{if(!confirm('删除这张表情？历史消息仍会显示。'))return;try{const response=await fetch(`/api/stickers/${button.dataset.deleteSticker}`,{method:'DELETE'});if(!response.ok)throw Error('删除失败');if(pendingSticker?.id===button.dataset.deleteSticker){pendingSticker=null;renderStickerDraft();updateStatus()}await loadStickers({fresh:true})}catch(error){toast(error.message)}})}
+async function loadStickers({fresh=false}={}){if(stickerItemsLoaded&&!fresh)return;if(stickerLoadPromise)return stickerLoadPromise;stickerLoadPromise=(async()=>{const response=await fetch('/api/stickers',{cache:'no-store'});if(!response.ok)throw Error('表情库暂时无法读取');stickerItems=(await response.json()).items||[];stickerItemsLoaded=true;renderStickerPanel();renderStickerGrid()})();try{return await stickerLoadPromise}finally{stickerLoadPromise=null}}
+async function openStickers(){if(document.activeElement===$('#input'))$('#input').blur();stickerTab='user';stickerEditMode=false;editingSticker=null;$('#stickerEditor').hidden=true;$('#editStickers').classList.remove('on');$$('[data-sticker-tab]').forEach(button=>button.classList.toggle('on',button.dataset.stickerTab==='user'));const sheet=$('#stickerSheet');sheet.classList.remove('expanded');$('#shade').classList.add('on');sheet.classList.add('on');try{await loadStickers({fresh:true})}catch(error){toast(error.message)}}
+function startStickerDrag(event){if(event.button!==undefined&&event.button!==0)return;stickerDragStart={pointerId:event.pointerId,y:event.clientY};event.currentTarget.setPointerCapture?.(event.pointerId);$('#stickerSheet').classList.add('dragging')}
+function moveStickerDrag(event){if(!stickerDragStart||event.pointerId!==stickerDragStart.pointerId)return;const delta=event.clientY-stickerDragStart.y;$('#stickerSheet').style.setProperty('--sticker-drag',`${Math.max(-180,Math.min(240,delta))}px`)}
+function endStickerDrag(event){if(!stickerDragStart||event.pointerId!==stickerDragStart.pointerId)return;const delta=event.clientY-stickerDragStart.y,sheet=$('#stickerSheet'),expanded=sheet.classList.contains('expanded');stickerDragStart=null;sheet.classList.remove('dragging');sheet.style.removeProperty('--sticker-drag');if(event.type==='pointercancel')return;if(delta< -50)sheet.classList.add('expanded');else if(delta>90&&!expanded)closeStickers();else if(delta>50&&expanded)sheet.classList.remove('expanded')}
+function updateStickerSave(){$('#saveSticker').disabled=!$('#stickerName').value.trim()||!$('#stickerDescription').value.trim()||(!editingSticker&&!$('#stickerFile').files.length)}
+async function saveSticker(event){event.preventDefault();updateStickerSave();if($('#saveSticker').disabled)return;const name=$('#stickerName').value.trim(),description=$('#stickerDescription').value.trim(),emotion_tags=$('#stickerTags').value.split(/[,，]/).map(value=>value.trim()).filter(Boolean);if(emotion_tags.length>5)return toast('情绪标签最多 5 个');try{let response;if(editingSticker){response=await fetch(`/api/stickers/${editingSticker.id}`,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name,description,emotion_tags})})}else{const form=new FormData();form.append('owner',stickerTab);form.append('name',name);form.append('description',description);form.append('emotion_tags',emotion_tags.join(','));form.append('file',$('#stickerFile').files[0]);response=await fetch('/api/stickers',{method:'POST',body:form})}if(!response.ok){const data=await response.json();throw Error(data.error||'保存失败')}editingSticker=null;$('#stickerEditor').hidden=true;await loadStickers({fresh:true});toast('表情已保存')}catch(error){toast(error.message)}}
 let imageProcessingModule;
 async function uploadImages(event){const files=[...(event.target.files||[])],sourceType=event.target.id==='cameraInput'?'camera':'upload';event.target.value='';if(!files.length)return;if(files.length+draftImages.length+pendingImageUploads>4)return toast('每次最多发送 4 张图片');if(profile(activeProvider).runtime!=='claude_tmux')return toast('图片暂时只支持 Claude Code 会话');pendingImageUploads+=files.length;$('#attachImage').disabled=true;renderAttachmentDraft();updateStatus();imageProcessingModule??=import('/image-processing.mjs?v=photos1');let processor;try{processor=await imageProcessingModule}catch{processor=null}const results=await Promise.allSettled(files.map(async file=>{if(!processor)throw new Error('图片压缩模块加载失败，请刷新后重试');const [compressed,capturedAt]=await Promise.all([processor.compressImageForUpload(file,{count:files.length,maxBytes:processor.imageBudgetForBatch(files.length)}),processor.extractJpegCapturedAt(file)]),form=new FormData();form.append('images',compressed,compressed.name||'photo.jpg');const headers={'x-image-source':sourceType};if(capturedAt)headers['x-image-captured-at']=String(capturedAt);const response=await fetch('/api/chat/images',{method:'POST',headers,body:form}),data=await response.json();if(!response.ok)throw new Error(data.error==='unsupported_image_type'?'这张图片无法转换为 JPEG':data.error==='image_too_large'?'图片压缩后仍然太大，请换一张重试':data.error||'图片上传失败');const image=safeMessageImages(data.images)[0];if(!image)throw new Error('图片上传失败');return image}));draftImages.push(...results.filter(result=>result.status==='fulfilled').map(result=>result.value));for(const result of results)if(result.status==='rejected')toast(result.reason?.message||'图片上传失败');pendingImageUploads=Math.max(0,pendingImageUploads-files.length);$('#attachImage').disabled=pendingImageUploads>0;renderAttachmentDraft();updateStatus()}
 function messagesNearBottom(box=$('#messages')){return !!box&&box.scrollHeight-box.scrollTop-box.clientHeight<96}
@@ -696,7 +1074,7 @@ function createStreamingView(out,initialFollow=keepBottomThroughViewportResize||
   };
   box.classList.add('streaming');box.addEventListener?.('scroll',onScroll,{passive:true});
   return {
-    update(event){if(!['segment_delta','segment_done','assistant_message','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(['assistant_message','thought_process','album_saved'].includes(event.type))structuralDirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
+    update(event){if(!['segment_delta','segment_done','assistant_message','assistant_sticker','thought_process','album_saved'].includes(event.type)&&!(!event.type&&event.delta))return;dirty=true;if(['assistant_message','assistant_sticker','thought_process','album_saved','segment_done'].includes(event.type))structuralDirty=true;if(framePending)return;framePending=true;frameHandle=scheduleFrame(flush)},
     finish(reveal=true){if(reveal){out.pending=false;out.bodyComplete=true}if(framePending)cancelFrame(frameHandle);framePending=false;try{if(reveal&&current()?.messages.includes(out)){renderMessages(false);if(activeAppView==='chat'&&follow&&keepBottomThroughViewportResize)scheduleTimelineBottom()}}catch{}box.removeEventListener?.('scroll',onScroll);box.classList.remove('streaming')},
     isFollowing:()=>follow
   };
@@ -811,7 +1189,7 @@ async function recoverConnection(request){
       const status=await response.json();
       if(!requestIsActive(request))return;
       if(!response.ok||status.turnId!==request.turnId||status.recoverable===false||!Array.isArray(status.events)){unrecoverableTurn(request);return}
-      for(const event of status.events){if(!requestIsActive(request))return;const applied=applyRequestEvent(request,event);if(applied!==false){if(!request.view&&['turn_started','segment_delta','segment_done','assistant_message','album_saved'].includes(event.type)){request.out.pending=true;request.view=createStreamingView(request.out)}request.view?.update(event);if(event.type==='segment_delta'||event.type==='assistant_message'||event.type==='album_saved')request.phase='connection_lost';if(['turn_done','turn_stopped'].includes(event.type)){request.phase='finished';if(request.out.delivery)request.out.delivery.notice='';finishGenerating(request,event.type==='turn_stopped');return}}}
+      for(const event of status.events){if(!requestIsActive(request))return;const applied=applyRequestEvent(request,event);if(applied!==false){if(!request.view&&['turn_started','segment_delta','segment_done','assistant_message','assistant_sticker','album_saved'].includes(event.type)){request.out.pending=true;request.view=createStreamingView(request.out)}request.view?.update(event);if(event.type==='segment_delta'||event.type==='assistant_message'||event.type==='assistant_sticker'||event.type==='album_saved')request.phase='connection_lost';if(['turn_done','turn_stopped'].includes(event.type)){request.phase='finished';if(request.out.delivery)request.out.delivery.notice='';finishGenerating(request,event.type==='turn_stopped');return}}}
       connectionLog('recovery_result',request,{state:status.state,receivedByRuntime:status.receivedByRuntime,latestSeq:status.latestSeq});
       if(!requestIsActive(request))return;
       if(status.state==='not_delivered'&&status.receivedByRuntime===false){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'这条消息没有成功送达。',true)}
@@ -849,34 +1227,34 @@ function finishGenerating(request,stopped=false){
   activeRequests.delete(request.clientRequestId);activeRequest=latestActiveRequest();sending=activeRequests.size>0;activeTurnId=[...activeRequests.values()].find(value=>value.turnId)?.turnId||'';
   persist();try{renderSessions();updateStatus()}catch{}
 }
-async function send(){ if(chatStoreMode==='loading'||chatStoreMode==='unavailable')return toast('本机聊天记录尚未就绪，请稍后再试');const text=$('#input').value.trim(),images=safeMessageImages(draftImages); if(!text&&!images.length)return; if(!configured())return openSettings(); if(!current())newChat(); const followStream=keepBottomThroughViewportResize||messagesNearBottom(),s=current(),userMessage={role:'user',content:text,images,createdAt:Date.now()},clientRequestId=generateId(); s.provider=activeProvider; s.messages.push(userMessage); if(s.messages.filter(m=>m.role==='user').length===1)s.title=(text||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];try{renderAttachmentDraft();autoSize()}catch{}persist();try{renderAll(followStream)}catch{}const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);recordChatSendDiagnostic('send_attempt',request);
+async function send(){ if(chatStoreMode==='loading'||chatStoreMode==='unavailable')return toast('本机聊天记录尚未就绪，请稍后再试');const text=$('#input').value.trim(),images=safeMessageImages(draftImages),sticker=pendingSticker; if(!text&&!images.length&&!sticker)return; if(sticker&&profile(activeProvider).runtime!=='claude_tmux')return toast('动态表情暂时只支持秋秋会话'); if(!configured())return openSettings(); if(!current())newChat(); const followStream=keepBottomThroughViewportResize||messagesNearBottom(),s=current(),clientRequestId=generateId(),userMessage={role:'user',content:text,images,createdAt:Date.now(),turnId:clientRequestId,...(!text&&!images.length&&sticker?{sticker:{id:sticker.id,name:sticker.name}}:{})}; s.provider=activeProvider; s.messages.push(userMessage); if(sticker&&(text||images.length))s.messages.push({role:'user',content:'',sticker:{id:sticker.id,name:sticker.name},turnId:clientRequestId,createdAt:Date.now()}); if(s.messages.filter(m=>m.role==='user').length===(sticker&&(text||images.length)?2:1))s.title=(text||sticker?.name||'图片').slice(0,22); s.messages.push({role:'assistant',content:'',pending:true,createdAt:Date.now(),delivery:{clientRequestId,turnId:null,phase:'queued',runtimeId:profile(activeProvider).runtimeId,lastAppliedSeq:0,notice:'',retryAllowed:false}}); $('#input').value='';draftImages=[];pendingSticker=null;try{renderAttachmentDraft();renderStickerDraft();autoSize()}catch{}persist();try{renderAll(followStream)}catch{}const request={controller:new AbortController(),out:s.messages.at(-1),userMessage,stopped:false,finished:false,phase:'queued',lastAppliedSeq:0,clientRequestId,runtime:profile(activeProvider).runtime,runtimeId:profile(activeProvider).runtimeId,sessionId:s.id};registerRequest(request);recordChatSendDiagnostic('send_attempt',request);
   const p=profile(activeProvider); const apiMessages=[]; if(p.system)apiMessages.push({role:'system',content:p.system}); if(s.bridge)apiMessages.push({role:'system',content:`以下是从上一段会话提炼、由用户确认的续窗启动包。把它作为背景，不要声称看过未包含的旧会话。\n\n${s.bridge}`}); apiMessages.push(...s.messages.filter(m=>!m.pending).map(({role,content})=>({role,content})));
   const requestMessages=p.runtime==='claude_tmux'?[{role:'user',content:text}]:apiMessages;
   const out=request.out;let streamView=null;try{streamView=createStreamingView(out,followStream)}catch{}request.view=streamView;saveDelivery(request);try{connectionLog('fetch_opened',request)}catch{}
   let fetchInFlight=false;
   try{
-    const body=JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId)});
+    const body=JSON.stringify({config:p,messages:requestMessages,clientRequestId:request.clientRequestId,imageIds:images.map(image=>image.imageId),...(sticker?{stickerId:sticker.id}:{})});
     recordChatSendDiagnostic('fetch_call',request);fetchInFlight=true;
     const r=await fetch('/api/chat',{method:'POST',headers:{'content-type':'application/json','accept':'application/x-ndjson'},body,signal:request.controller.signal});
     fetchInFlight=false;request.lastHttpStatus=r.status;recordChatSendDiagnostic('fetch_resolved',request,{status:r.status});
     if(!r.ok){const e=await r.json();throw new Error([e.error,e.detail].filter(Boolean).join('\n'))}
     try{connectionLog('stream_opened',request)}catch{}
-    await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){request.userMessage.images=safeMessageImages(event.images);persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView?.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event),event=>recordChatSendDiagnostic(event,request,{status:r.status}));
-  }catch(e){if(fetchInFlight)recordChatSendDiagnostic('fetch_rejected',request,{error:e});out.pending=false;if(!request.turnId&&images.length){draftImages=safeMessageImages(images);try{renderAttachmentDraft()}catch{}}if(fetchInFlight||e?.chatTransportFailure)await handleConnectionLoss(request,e);else if(e?.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。')}else console.warn?.('[dwell chat local]',e?.name||'Error')}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
+    await readTurnStream(r,out,event=>{if(event.type==='turn_queued'){request.phase='queued';saveDelivery(request)}if(event.type==='turn_started'){request.turnId=event.turnId;activeTurnId=event.turnId;request.phase='turn_started';saveDelivery(request);connectionLog('turn_started',request)}if(event.type==='user_images'&&request.userMessage){const visible=safeMessageImages(event.images);request.userMessage.images=sticker?visible.filter(image=>images.some(sent=>image.imageId&&image.imageId===sent.imageId||image.photoId&&image.photoId===sent.photoId)):visible;persist()}if(event.type==='segment_delta'&&request.phase!=='streaming'){request.phase='streaming';saveDelivery(request);connectionLog('first_output',request)}if(['assistant_message','assistant_sticker','album_saved'].includes(event.type)){ensureAssistantPresentationPosition(request);request.phase='streaming';saveDelivery(request);persist();}streamView?.update(event);if(['turn_done','turn_stopped','turn_error'].includes(event.type)){request.phase='finished';finishGenerating(request,event.type==='turn_stopped')}},event=>applyRequestEvent(request,event),event=>recordChatSendDiagnostic(event,request,{status:r.status}));
+  }catch(e){if(fetchInFlight)recordChatSendDiagnostic('fetch_rejected',request,{error:e});if(!request.turnId&&(images.length||sticker)){draftImages=safeMessageImages(images);pendingSticker=sticker;try{renderAttachmentDraft();renderStickerDraft()}catch{}}if(fetchInFlight||e?.chatTransportFailure)await handleConnectionLoss(request,e);else if(e?.turnError){request.phase='finished';finishGenerating(request);showConnectionNotice(request,'秋秋的回复遇到了一点问题，请稍后再试。')}else console.warn?.('[dwell chat local]',e?.name||'Error')}finally{if(!request.finished&&request.phase!=='connection_lost')finishGenerating(request);persist()}}
 async function triggerSend(){try{await send()}catch(e){toast('网络刚刚断了一下，请稍后再试。')}}
 function preserveComposerFocusOnSend(event){sendPointerActive=true;clearTimeout(sendPointerTimer);sendPointerTimer=setTimeout(()=>{sendPointerActive=false;scheduleVisualViewportSync()},450);if(document.activeElement===$('#input'))event.preventDefault()}
 function autoSize(){const t=$('#input');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,160)+'px';updateStatus();if($('#toast').classList.contains?.('on'))positionToast()}
-$('#settingsBtn').onclick=openUserHub; $('#welcomeSetup').onclick=openSettings; $('#modelBtn').onclick=()=>{if(profile(activeProvider).runtime!=='claude_tmux')openSettings()}; $('#closeSettings').onclick=closeConnections; $('#closeContinue').onclick=closeSheets;$('#shade').onclick=()=>$('#addToChatSheet').classList.contains('on')?closeAddToChat():closeSheets(); $('#menuBtn').onclick=()=>{$('aside').classList.toggle('on')}; $('#asideClose').onclick=()=>{$('aside').classList.remove('on')}; $('#send').onpointerdown=preserveComposerFocusOnSend; $('#send').onclick=()=>{sendPointerActive=false;clearTimeout(sendPointerTimer);void triggerSend();scheduleVisualViewportSync()}; $('#startContinue').onclick=startContinuation; $('#backupContinue').onclick=backupContinuation; $('#continueDraft').oninput=()=>updateContinueStats(buildContinuation(sessions.find(s=>s.id===continuationSourceId)||{messages:[],title:''}).kept,(sessions.find(s=>s.id===continuationSourceId)?.messages||[]).length);
+$('#settingsBtn').onclick=openUserHub; $('#welcomeSetup').onclick=openSettings; $('#modelBtn').onclick=()=>{if(profile(activeProvider).runtime!=='claude_tmux')openSettings()}; $('#closeSettings').onclick=closeConnections; $('#closeContinue').onclick=closeSheets;$('#shade').onclick=()=>$('#stickerSheet').classList.contains('on')?closeStickers():$('#addToChatSheet').classList.contains('on')?closeAddToChat():closeSheets(); $('#menuBtn').onclick=()=>{$('aside').classList.toggle('on')}; $('#asideClose').onclick=()=>{$('aside').classList.remove('on')}; $('#send').onpointerdown=preserveComposerFocusOnSend; $('#send').onclick=()=>{sendPointerActive=false;clearTimeout(sendPointerTimer);void triggerSend();scheduleVisualViewportSync()}; $('#startContinue').onclick=startContinuation; $('#backupContinue').onclick=backupContinuation; $('#continueDraft').oninput=()=>updateContinueStats(buildContinuation(sessions.find(s=>s.id===continuationSourceId)||{messages:[],title:''}).kept,(sessions.find(s=>s.id===continuationSourceId)?.messages||[]).length);
 $('#notificationsButton').onclick=toggleNotifications;
 $('#attachImage').onclick=openAddToChat;$('#attachmentInput').onchange=uploadImages;$('#fileInput').onchange=uploadImages;$('#cameraInput').onchange=uploadImages;
-$('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=null; $('#emojiButton').onclick=()=>{}; $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
-$('#input').onfocus=()=>{if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',()=>{noteTimelineUserScroll();cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('wheel',event=>{noteTimelineUserScroll();if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('scroll',()=>{if(timelineUserScrollIntent&&messagesNearBottom())setViewportBottomAnchor(true)},{passive:true});$('#messages').addEventListener?.('load',event=>{if(event.target?.tagName==='IMG'&&keepBottomThroughViewportResize)scheduleTimelineBottom()},true);
+$('#input').oninput=$('#input').onchange=$('#input').oncompositionend=autoSize; $('#input').onkeydown=null; $('#emojiButton').onclick=()=>void toggleStickerPanel();$('#stickerForm').onsubmit=event=>void saveSticker(event);$('#addSticker').onclick=()=>showStickerEditor();$('#cancelStickerEditor').onclick=()=>{$('#stickerEditor').hidden=true;editingSticker=null};$('#editStickers').onclick=()=>{stickerEditMode=!stickerEditMode;$('#editStickers').classList.toggle('on',stickerEditMode);renderStickerGrid()};const stickerHandle=$('#stickerHandle');stickerHandle.onpointerdown=startStickerDrag;stickerHandle.onpointermove=moveStickerDrag;stickerHandle.onpointerup=endStickerDrag;stickerHandle.onpointercancel=endStickerDrag;['#stickerName','#stickerDescription','#stickerTags','#stickerFile'].forEach(selector=>$(selector).oninput=updateStickerSave);$$('[data-sticker-tab]').forEach(button=>button.onclick=()=>{stickerTab=button.dataset.stickerTab;stickerEditMode=false;$('#editStickers').classList.remove('on');$('#stickerEditor').hidden=true;$$('[data-sticker-tab]').forEach(item=>item.classList.toggle('on',item===button));renderStickerGrid()}); $$('[data-soon]').forEach(b=>b.onclick=()=>toast('这间屋子还在慢慢盖'));
+$('#input').onfocus=()=>{closeStickerPanel();if(messagesNearBottom()||keepBottomThroughViewportResize)setViewportBottomAnchor(true);scheduleVisualViewportSync()};$('#input').onblur=scheduleVisualViewportSync;$('#messages').addEventListener?.('touchmove',()=>{noteTimelineUserScroll();cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('wheel',event=>{noteTimelineUserScroll();if(event.deltaY<0)cancelViewportBottomAnchor()},{passive:true});$('#messages').addEventListener?.('scroll',()=>{if(timelineUserScrollIntent&&messagesNearBottom())setViewportBottomAnchor(true)},{passive:true});$('#messages').addEventListener?.('load',event=>{if(event.target?.tagName==='IMG'&&keepBottomThroughViewportResize)scheduleTimelineBottom()},true);
 $('#chatNav').onclick=showChat;$('#memoryNav').onclick=showMemory;$('#mindStrataTab').onclick=()=>showMindView('desire');$('#mindMemoryTab').onclick=()=>showMindView('memory');$('#memoryMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#desireMenu').onclick=()=>{$('aside').classList.toggle('on')};$('#closeMemoryDetail').onclick=closeMemoryDetail;$('#openMemoryFilter').onclick=openMemoryFilters;$('#closeMemoryFilter').onclick=closeSheets;$('#applyMemoryFilter').onclick=applyMemoryFilters;$('#clearMemoryFilter').onclick=clearMemoryFilters;$$('#memoryFilters button').forEach(button=>button.onclick=()=>{memoryState.activePrimaryFilter=button.dataset.filter;$$('#memoryFilters button').forEach(item=>item.classList.toggle('on',item===button));renderMemoryList()});$('#memorySort').onchange=event=>{memoryState.sortMode=event.target.value;renderMemoryList()};$('#memorySearch').oninput=event=>{memoryState.searchQuery=event.target.value;clearTimeout(memorySearchTimer);memorySearchTimer=setTimeout(()=>searchMemory(event.target.value),300)};
 $('#memorySearch').onfocus=$('#memorySearch').onblur=scheduleVisualViewportSync;$('#memoryBody').addEventListener?.('scroll',()=>{memoryState.scrollPosition=$('#memoryBody').scrollTop},{passive:true});
 $('#runBreath').onclick=runBreathDebug;$('#breathQuery').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();runBreathDebug()}};
 $('#photosNav').onclick=()=>showPhotos().catch(error=>toast(error.message));$('#closePhotos').onclick=showChat;$('#closeAlbum').onclick=()=>{activeAppView='photos';$('#albumPage').hidden=true;$('#photosPage').hidden=false};$('#closePhotoDetail').onclick=closePhotoDetail;$('#photoDetailMore').onclick=()=>toast('照片操作还没有开放');$('#photoDetailShare').onclick=async()=>{if(!activePhotoDetail)return;try{if(!navigator.share)return toast('当前浏览器不支持系统分享');await navigator.share({title:activePhotoDetail.albumName||'Photos',text:activePhotoDetail.note||'收藏的照片'})}catch(error){if(error.name!=='AbortError')toast('暂时无法分享')}};$('#newAlbum').onclick=openAlbumSheet;$('#cancelAlbum').onclick=closeSheets;$('#createAlbum').onclick=()=>createAlbumFromSheet().catch(error=>toast(error.message));$$('#albumMoods button').forEach(button=>button.onclick=()=>{selectedMood=button.dataset.mood;$$('#albumMoods button').forEach(item=>item.classList.toggle('on',item===button))});
 $('#closeAssistant').onclick=showChat;$('#editAssistant').onclick=openAssistantEdit;$('#cancelAssistantEdit').onclick=cancelAssistantEdit;$('#saveAssistantEdit').onclick=saveAssistantEdit;$('#changeAssistantAvatar').onclick=selectAssistantAvatar;$('#assistantAvatarInput').onchange=previewAssistantAvatar;$('#assistantSearch').onclick=openChatSearch;$('#assistantConversations').onclick=()=>{showChat();openContinuation()};$('#assistantMute').onclick=()=>toast('Mute is not connected yet');$('#assistantMore').onclick=()=>toast('More actions are not available yet');
-$('#closeUserHub').onclick=showChat;$('#myProfile').onclick=openUserProfile;$('#closeUserProfile').onclick=openUserHub;$('#editUserProfile').onclick=openUserEdit;$('#cancelUserProfileEdit').onclick=cancelUserEdit;$('#saveUserProfileEdit').onclick=saveUserEdit;$('#changeUserAvatar').onclick=()=>$('#userAvatarInput').click();$('#userAvatarInput').onchange=previewUserAvatar;$('#openConnections').onclick=openConnections;$('#toggleLocalRecoveryDiagnostic').onclick=()=>{const panel=$('#localRecoveryDiagnosticDetails');panel.hidden=!panel.hidden;$('#toggleLocalRecoveryDiagnostic').setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden)showLocalRecoveryDiagnostic()};$$('[data-profile-soon]').forEach(button=>button.onclick=()=>toast('Coming soon'));
+$('#closeUserHub').onclick=showChat;$('#myProfile').onclick=openUserProfile;$('#closeUserProfile').onclick=openUserHub;$('#editUserProfile').onclick=openUserEdit;$('#cancelUserProfileEdit').onclick=cancelUserEdit;$('#saveUserProfileEdit').onclick=saveUserEdit;$('#changeUserAvatar').onclick=()=>$('#userAvatarInput').click();$('#userAvatarInput').onchange=previewUserAvatar;$('#openConnections').onclick=openConnections;$('#toggleLocalRecoveryDiagnostic').onclick=()=>{const panel=$('#localRecoveryDiagnosticDetails');panel.hidden=!panel.hidden;$('#toggleLocalRecoveryDiagnostic').setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden){showLocalRecoveryDiagnostic();mountChatRecoveryControls()}else $('#chatRecoveryControls')?.remove()};$$('[data-profile-soon]').forEach(button=>button.onclick=()=>toast('Coming soon'));
 $('#save').onclick=async()=>{saveDraft();const p=profile(activeProvider);if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected'){ $('#testMsg').className='test-msg bad';$('#testMsg').textContent=d.error||`Claude runtime：${d.state}`;return }}if(!persistProfileSettings()||!await persist())return;updateStatus();closeSettings();toast('接好了，这条路记住了')};
 $('#test').onclick=async()=>{saveDraft();const p=profile(activeProvider);$('#testMsg').className='test-msg';$('#testMsg').textContent='正在敲门…';try{if(p.runtime==='claude_tmux'){const d=await refreshRuntimeStatus();if(d.state!=='connected')throw new Error(`Claude runtime：${d.state}`);if(!persistProfileSettings()||!await persist())return;updateStatus();$('#testMsg').textContent=`门开了 · ${d.sessionName||p.runtimeId}`;return}const r=await fetch('/api/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({config:p})});const d=await r.json();if(!r.ok)throw new Error([d.error,d.detail].filter(Boolean).join('\n'));if(!persistProfileSettings()||!await persist())return;updateStatus();$('#testMsg').textContent=`门开了 · ${d.model}`}catch(e){$('#testMsg').className='test-msg bad';$('#testMsg').textContent=e.message}};
 function finishChatBootstrap(){
@@ -894,6 +1272,7 @@ if(keyboardTraceEnabled()){
    recordKeyboardTrace('trace_initialized');
  }
  beginChatRecoveryAfterBootstrap();
+ startViewfinderSyncPolling();
 }
 
 $('#chatMore').onclick=openAssistantDetails;
@@ -908,10 +1287,14 @@ $('#viewerStage').addEventListener?.('touchstart',event=>{viewerStartX=event.cha
 // Backgrounding and offline events never cancel or resend the chat POST.
 const resumeConnectionCheck=()=>{if(document.visibilityState==='hidden'||globalThis.navigator?.onLine===false)return;for(const request of activeRequests.values())if(request.phase==='connection_lost')recoverConnection(request)};
 globalThis.addEventListener?.('online',resumeConnectionCheck);
+globalThis.addEventListener?.('online',recheckRuntimeOnResume);
 globalThis.addEventListener?.('pageshow',capturePageshowDiagnostic);
 globalThis.addEventListener?.('pageshow',resumeConnectionCheck);
+globalThis.addEventListener?.('pageshow',recheckRuntimeOnResume);
 globalThis.addEventListener?.('focus',resumeConnectionCheck);
+globalThis.addEventListener?.('focus',recheckRuntimeOnResume);
 document.addEventListener?.('visibilitychange',resumeConnectionCheck);
+document.addEventListener?.('visibilitychange',recheckRuntimeOnResume);
 // Safari may discard the page while a reply is in flight. Restore only its ID,
 // never the POST; expired server metadata must remain an unknown delivery.
 function restoreInterruptedConnection(){
@@ -926,7 +1309,7 @@ function beginChatRecoveryAfterBootstrap(){restoreInterruptedConnection();const 
 if(useIndexedDbChatStore)void initializeChatStorage().then(finishChatBootstrap);else finishChatBootstrap();
 async function recoverLegacySuppressedFinals(){return false}
 globalThis.navigator?.serviceWorker?.addEventListener?.('message',event=>{if(event.data?.type==='qiuqiu-open-chat'&&event.data.target==='/')void restoreMainChatFromNavigation()});
-if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa43-chat-idb-primary1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
+if('serviceWorker' in (globalThis.navigator||{}))globalThis.addEventListener?.('load',()=>{globalThis.navigator.serviceWorker.register('/sw.js?v=pwa56-runtime-reconnect1',{scope:'/'}).then(registration=>registration.update()).catch(()=>{})});
 void loadShoppingApprovals();
 globalThis.setInterval?.(()=>{if(document.visibilityState!=='hidden')void loadShoppingApprovals()},5000);
 document.addEventListener?.('visibilitychange',()=>{if(document.visibilityState==='visible')void loadShoppingApprovals()});

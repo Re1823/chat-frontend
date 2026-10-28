@@ -5,8 +5,10 @@ import { createFrontendDelivery } from '../presentation/frontend-delivery.mjs';
 
 const terminal=event=>['turn_done','turn_stopped','turn_error'].includes(event.type);
 
-export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ingress,imageStore=null,frameBufferFactory=createFrameBuffer,log=record=>console.info(JSON.stringify(record))}){
-  const frontendDelivery=createFrontendDelivery({turnStore,runtimeId:config.runtimeId});
+export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ingress,imageStore=null,stickerStore=null,
+  recordThought=null,frameBufferFactory=createFrameBuffer,log=record=>console.info(JSON.stringify(record))}){
+  const frontendDelivery=createFrontendDelivery({turnStore,runtimeId:config.runtimeId,recordThought,stickerStore,
+    onThoughtDiagnostic:record=>{try{log({component:'non_thought_authoring',...record})}catch{}}});
   const finished=new Map(),stopOperations=new Map(),thoughtPolls=new Map(),acceptancePolls=new Map();
   let finalizations=0;
   const record=(event,turnId,details={})=>{try{log({time:new Date().toISOString(),component:'node',event,turnId,clientRequestId:turnStore.status?.(turnId)?.clientRequestId||null,...details})}catch{}};
@@ -92,6 +94,7 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
     releaseRequest(clientRequestId){return turnStore.releaseRequest(clientRequestId)},
     requestRecovery(clientRequestId){return turnStore.requestRecovery(clientRequestId)},
     bindFrontendDelivery(){return frontendDelivery.bind()},
+    bindStickerDelivery(){return frontendDelivery.bindSticker()},
     deliverSavedPhoto(photo,text=''){
       const turn=turnStore.get();if(!turn||turn.runtimeId!==config.runtimeId||turn.state!=='running'||turn.closed||turnStore.status(turn.turnId)?.detached)throw Object.assign(new Error('No active frontend turn'),{statusCode:409});
       const messageId=randomUUID();turnStore.emit(config.runtimeId,turn.turnId,{type:'assistant_message',turnId:turn.turnId,messageId,text,source:'tool',images:[photo]});return {ok:true,messageId};
@@ -104,8 +107,8 @@ export function createClaudeTmuxRuntime({config,transport,registry,turnStore,ing
     async initialize(){
       let saved=await registry.load();
       if(!saved&&config.enabled&&config.workspace)saved=await registry.save({runtimeId:config.runtimeId,sessionName:config.sessionName,workspace:config.workspace,claudeCommand:config.claudeBinary,createdAt:new Date().toISOString()});
-      reconciliation=await registry.reconcile();
-      if(config.enabled&&reconciliation.state==='missing'&&config.autoCreate){await transport.createSession({sessionName:saved.sessionName,workspace:saved.workspace,command:saved.claudeCommand||config.claudeBinary,args:config.launchArgs||[]});reconciliation=await registry.reconcile()}
+      reconciliation=await registry.reconcile({statusTimeoutMs:5000});
+      if(config.enabled&&reconciliation.state==='missing'&&config.autoCreate){await transport.createSession({sessionName:saved.sessionName,workspace:saved.workspace,command:saved.claudeCommand||config.claudeBinary,args:config.launchArgs||[]});reconciliation=await registry.reconcile({statusTimeoutMs:5000})}
       return reconciliation;
     },
     async status(){reconciliation=await registry.reconcile();return reconciliation},

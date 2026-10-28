@@ -77,7 +77,7 @@ export function createTurnStore({journalTtlMs=20*60*1000,maxTurns=256,maxEventsP
     detached(turnId,{preserveInternal=false}={}){update(turnId,{detached:true,streamAttached:false});if(!preserveInternal&&active?.turnId===turnId)active.emit=null},
     attached(turnId){update(turnId,{detached:false,streamAttached:true})},
     matches(runtimeId,turnId){return !!active&&active.runtimeId===runtimeId&&active.turnId===turnId},
-    emit(runtimeId,turnId,event){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;const journalEvent=append(turn,event);if(event.type==='segment_delta'||event.type==='assistant_message')update(turnId,{hasOutput:true,receivedByRuntime:true,state:'streaming'});deliver(turn,journalEvent);return true},
+    emit(runtimeId,turnId,event){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;const journalEvent=append(turn,event);if(event.type==='segment_delta'||event.type==='assistant_message'||event.type==='assistant_sticker')update(turnId,{hasOutput:true,receivedByRuntime:true,state:'streaming'});deliver(turn,journalEvent);return true},
     requestStop(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.state==='running')turn.state='stop_requested';return turn},
     finish(runtimeId,turnId,event){return close(requireActive(runtimeId,turnId),event)},
     discard(runtimeId,turnId){const turn=requireActive(runtimeId,turnId);if(turn.closed)return false;const item=metadata.get(turnId);update(turnId,{active:false,finished:true,completedAt:iso(),state:'not_delivered',receivedByRuntime:false});if(item?.clientRequestId)requestIndex.delete(item.clientRequestId);turn.closed=true;turn.state='discarded';active=null;settleWaiters();gc();return true},

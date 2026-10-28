@@ -8,12 +8,12 @@ const MAX_CONVERSATION_RESPONSE_BYTES=1152*1024;
 const bridgeError=(message,statusCode=502)=>Object.assign(new Error(message),{statusCode});
 
 export function createRootBridgeClient({connect=path=>net.createConnection({path}),timeoutMs=1500,maxResponseBytes=MAX_RESPONSE_BYTES}={}){
-  return message=>new Promise((resolve,reject)=>{
+  return (message,{requestTimeoutMs}={})=>new Promise((resolve,reject)=>{
     const socket=connect(ROOT_BRIDGE_SOCKET);
     let response='',settled=false;
     const fail=error=>{if(settled)return;settled=true;socket.destroy?.();reject(error)};
     socket.setEncoding?.('utf8');
-    socket.setTimeout?.(timeoutMs);
+    socket.setTimeout?.(requestTimeoutMs??timeoutMs);
     socket.once('connect',()=>socket.end(`${JSON.stringify(message)}\n`));
     socket.on('data',chunk=>{
       response+=chunk;
@@ -32,11 +32,11 @@ export function createRootBridgeClient({connect=path=>net.createConnection({path
   });
 }
 
-export function createRootBridgeTransport({request=createRootBridgeClient(),sendRequest=createRootBridgeClient({timeoutMs:25000}),thoughtRequest=createRootBridgeClient({timeoutMs:5000,maxResponseBytes:MAX_THOUGHT_RESPONSE_BYTES}),conversationRequest=createRootBridgeClient({timeoutMs:5000,maxResponseBytes:MAX_CONVERSATION_RESPONSE_BYTES})}={}){
+export function createRootBridgeTransport({request=createRootBridgeClient(),sendRequest=createRootBridgeClient({timeoutMs:25000}),thoughtRequest=createRootBridgeClient({timeoutMs:5000,maxResponseBytes:MAX_THOUGHT_RESPONSE_BYTES}),conversationRequest=createRootBridgeClient({timeoutMs:30000,maxResponseBytes:MAX_CONVERSATION_RESPONSE_BYTES})}={}){
   const operationId=value=>{if(!/^[A-Za-z0-9_-]{16,128}$/.test(value||''))throw bridgeError('invalid carryover operation',400);return value};
   return {
-    async hasSession(){return Boolean((await request({op:'status'})).running)},
-    async inspectSession(){const status=await request({op:'status'});return {exists:Boolean(status.running),alive:Boolean(status.running),active:status.active===true,activeTurnId:status.activeTurnId||null,panes:[]}},
+    async hasSession(_sessionName,{requestTimeoutMs}={}){return Boolean((await request({op:'status'},{requestTimeoutMs})).running)},
+    async inspectSession(_sessionName,{requestTimeoutMs}={}){const status=await request({op:'status'},{requestTimeoutMs});return {exists:Boolean(status.running),alive:Boolean(status.running),active:status.active===true,activeTurnId:status.activeTurnId||null,panes:[]}},
     async createSession(){const result=await request({op:'ensure'});return {created:Boolean(result.created)}},
     async sendPrompt({turnId,prompt,dispatchLease}){return await sendRequest({...{op:'send',turnId,prompt},...(dispatchLease===undefined?{}:{lease:dispatchLease})})},
     async deliveryStatus(turnId){return await sendRequest({op:'delivery_status',turnId})},

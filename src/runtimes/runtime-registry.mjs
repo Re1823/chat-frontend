@@ -26,10 +26,10 @@ export function createRuntimeRegistry({filePath,transport,files={mkdir,readFile,
       await files.rename(temporary,filePath);
       return runtime;
     },
-    async reconcile(){
+    async reconcile({statusTimeoutMs}={}){
       if(!runtime)return {state:'unconfigured',runtime:null};
-      if(!await transport.hasSession(runtime.sessionName))return {state:'missing',runtime};
-      const inspection=await transport.inspectSession(runtime.sessionName);
+      if(!await transport.hasSession(runtime.sessionName,{requestTimeoutMs:statusTimeoutMs}))return {state:'missing',runtime};
+      const inspection=await transport.inspectSession(runtime.sessionName,{requestTimeoutMs:statusTimeoutMs});
       return {state:inspection.alive?'connected':'exited',runtime,inspection};
     }
   };
