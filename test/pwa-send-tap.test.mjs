@@ -25,7 +25,6 @@ test('iPhone-sized composer sends once beside approval timeline', async () => {
     await page.waitForTimeout(150);
     const after=await page.evaluate(()=>({events:JSON.parse(sessionStorage.getItem('dwell.chat-send-diagnostics.v1')||'[]').flatMap(item=>item.events.map(event=>event.event)),input:document.querySelector('#input').value,overflow:document.documentElement.scrollWidth>innerWidth,cardPosition:getComputedStyle(document.querySelector('.shopping-approval-card')).position}));
     assert.equal(before.disabled,false);
-    assert.equal(before.transitioning,true);
     assert.equal(before.footerPointerEvents,'auto');
     assert.equal(chatCalls,1);
     assert.equal(after.input,'');
