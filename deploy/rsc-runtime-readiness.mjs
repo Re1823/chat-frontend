@@ -1,3 +1,6 @@
+import {createHash} from 'node:crypto';
+import {parseTranscript,isCompactRecord} from '../src/runtimes/rsc/transcript-parser.mjs';
+
 const FRONTEND_MCP='qiuqiu-frontend';
 
 const fatalPatterns=[
@@ -18,6 +21,60 @@ export function transcriptTextEvidence(text,sessionId){
   const wrongSessionRecord=records.some(record=>(record?.sessionId||record?.session_id)&&(record.sessionId||record.session_id)!==sessionId);
   const valid=sessionRecords.length>0&&dialogueRecords.length>0&&!wrongSessionRecord;
   return {valid,parseable:true,hardFailure:false,writeInProgress,stablePrefixBytes:Buffer.byteLength(stable),recordCount:records.length,sessionRecordCount:sessionRecords.length,dialogueRecordCount:dialogueRecords.length,wrongSessionRecord,reason:valid?null:'WAITING_FOR_STARTUP_EVIDENCE',records};
+}
+
+const digest=value=>createHash('sha256').update(value).digest('hex');
+const metadataFields={'atis-latch':'atis',mode:'mode','permission-mode':'permissionMode'};
+const startupMetadataTypes=new Set([...Object.keys(metadataFields),'file-history-snapshot']);
+const sourceFail=reason=>Object.assign(new Error(reason),{reason});
+const freshMetadata=(record,sessionId)=>{const field=metadataFields[record.type];return Boolean(field&&Object.keys(record).filter(key=>key!=='__line').sort().join(',')===[field,'sessionId','type'].sort().join(',')&&record.sessionId===sessionId&&typeof record[field]==='string'&&(record.type==='atis-latch'||record[field].length>0))};
+
+function lastGoodGraph(records,sessionId){
+ const seen=new Map();let leaf=null;
+ for(const record of records){
+  if(record.sessionId&&record.sessionId!==sessionId||record.session_id&&record.session_id!==sessionId)throw sourceFail('FAILED_TRANSCRIPT_SESSION');
+  if(record.uuid===undefined){if(record.parentUuid!==undefined&&record.parentUuid!==null)throw sourceFail('FAILED_TRANSCRIPT_STRUCTURE');continue}
+  if(typeof record.uuid!=='string'||!record.uuid||seen.has(record.uuid))throw sourceFail('FAILED_TRANSCRIPT_STRUCTURE');
+  if(record.parentUuid!==undefined&&record.parentUuid!==null&&(typeof record.parentUuid!=='string'||!seen.has(record.parentUuid)))throw sourceFail('FAILED_TRANSCRIPT_STRUCTURE');
+  seen.set(record.uuid,record);
+  if(record.isSidechain!==true)leaf=record.uuid;
+ }
+ if(!leaf)throw sourceFail('FAILED_TRANSCRIPT_STRUCTURE');
+ const ancestry=new Set();let cursor=leaf;
+ while(cursor){
+  if(ancestry.has(cursor)||!seen.has(cursor))throw sourceFail('FAILED_TRANSCRIPT_STRUCTURE');
+  ancestry.add(cursor);cursor=seen.get(cursor).parentUuid||null;
+ }
+ return true;
+}
+
+export function lastGoodResumeBaseline(buffer,sessionId){
+ const bytes=Buffer.isBuffer(buffer)?buffer:Buffer.from(buffer);
+ const text=transcriptTextEvidence(bytes.toString('utf8'),sessionId);
+ if(!text.valid||!text.parseable||text.writeInProgress||text.wrongSessionRecord)throw sourceFail(text.wrongSessionRecord?'FAILED_TRANSCRIPT_SESSION':'FAILED_TRANSCRIPT_PARSE');
+ const records=parseTranscript(bytes,{sourceSessionId:sessionId});
+ lastGoodGraph(records,sessionId);
+ return {bytes:bytes.length,sha256:digest(bytes)};
+}
+
+export function lastGoodResumeAppend(buffer,sessionId,baseline){
+ try{
+  const bytes=Buffer.isBuffer(buffer)?buffer:Buffer.from(buffer);
+  if(!baseline||!Number.isSafeInteger(baseline.bytes)||typeof baseline.sha256!=='string'||bytes.length<baseline.bytes||digest(bytes.subarray(0,baseline.bytes))!==baseline.sha256)throw sourceFail('FAILED_SOURCE_PREFIX_CHANGED');
+  const text=transcriptTextEvidence(bytes.toString('utf8'),sessionId);
+  if(text.writeInProgress)return {fresh:false,verified:false,failed:false,reason:'WRITE_IN_PROGRESS'};
+  if(!text.valid||!text.parseable||text.wrongSessionRecord)throw sourceFail(text.wrongSessionRecord?'FAILED_TRANSCRIPT_SESSION':'FAILED_TRANSCRIPT_PARSE');
+  const records=parseTranscript(bytes,{sourceSessionId:sessionId});
+  lastGoodGraph(records,sessionId);
+  const appended=parseTranscript(bytes.subarray(baseline.bytes),{sourceSessionId:sessionId});
+  if(appended.some(record=>['user','assistant'].includes(record.type)))throw sourceFail('UNEXPECTED_USER_OR_ASSISTANT_RECORD');
+  if(appended.some(isCompactRecord))throw sourceFail('UNEXPECTED_COMPACT');
+  if(appended.some(record=>!startupMetadataTypes.has(record.type)))throw sourceFail('UNEXPECTED_STARTUP_RECORD');
+  if(appended.some(record=>record.type==='file-history-snapshot'&&(Object.keys(record).filter(key=>key!=='__line').sort().join(',')!=='isSnapshotUpdate,messageId,snapshot,type'||typeof record.messageId!=='string'||!record.messageId||typeof record.isSnapshotUpdate!=='boolean'||!record.snapshot||typeof record.snapshot!=='object'||Array.isArray(record.snapshot))))throw sourceFail('FAILED_STARTUP_METADATA');
+  for(const record of appended)if(metadataFields[record.type]&&!freshMetadata(record,sessionId))throw sourceFail('FAILED_STARTUP_METADATA');
+  const fresh=appended.some(record=>freshMetadata(record,sessionId));
+  return {fresh,verified:true,failed:false,reason:null};
+ }catch(error){return {fresh:false,verified:false,failed:true,reason:error.reason||'FAILED_TRANSCRIPT_PARSE'}}
 }
 
 export function startupLogEvidence(text){

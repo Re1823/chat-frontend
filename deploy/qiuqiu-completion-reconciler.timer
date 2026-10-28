@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for cancelled Qiuqiu completion hooks
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=qiuqiu-completion-reconciler.service
+
+[Install]
+WantedBy=timers.target

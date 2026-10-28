@@ -12,7 +12,12 @@ const frontendTools=[
   'mcp__qiuqiu-frontend__list_photo_albums',
   'mcp__qiuqiu-frontend__list_photos',
   'mcp__qiuqiu-frontend__read_saved_photo',
-  'mcp__qiuqiu-frontend__send_saved_photo_to_frontend'
+  'mcp__qiuqiu-frontend__send_saved_photo_to_frontend',
+  'mcp__qiuqiu-frontend__shopping_search',
+  'mcp__qiuqiu-frontend__shopping_product',
+  'mcp__qiuqiu-frontend__shopping_select',
+  'mcp__qiuqiu-frontend__shopping_prepare_purchase',
+  'mcp__qiuqiu-frontend__shopping_purchase_status'
 ];
 
 const protectedProjectPaths=[
@@ -26,6 +31,13 @@ const protectedHostPaths=[
   '/root/.claude/**',
   '/root/.ssh/**',
   '/root/.config/**',
+  "/root/.local/**",
+  "/root/.mcp.json",
+  "/root/.claude.json",
+  "/root/.claude.json.*",
+  "/root/.bash*",
+  "/root/.profile",
+  "/root/.env*",
   '/etc/**',
   '/proc/**',
   '/sys/**',
@@ -33,7 +45,7 @@ const protectedHostPaths=[
 ];
 
 const writeDeniedPaths=[
-  '/root/**',
+  ...protectedHostPaths.filter(path=>path.startsWith('/root/')),
   '/etc/**',
   '/proc/**',
   '/sys/**',
@@ -51,18 +63,55 @@ export function createSessionPolicy(httpHook){
   const allow=[
     'mcp__ombre-brain__*',
     ...frontendTools,
-    `Read(${FRONTEND_PROJECT}/**)`,
-    `Edit(${FRONTEND_PROJECT}/**)`,
-    `Write(${FRONTEND_PROJECT}/**)`,
+    'WebFetch',
+    "mcp__galatea-garden__*",
+    "Bash(TMPDIR=./.tmp node *)",
+    "Bash(TMPDIR=./.tmp npm *)",
+    "Bash(TMPDIR=./.tmp npx *)",
+    "Bash(TMPDIR=./.tmp python *)",
+    "Bash(TMPDIR=./.tmp python3 *)",
+    "Bash(TMPDIR=./.tmp pip *)",
+    "Bash(TMPDIR=./.tmp pip3 *)",
+    "Bash(TMPDIR=./.tmp uv *)",
+    "Read(//root/**)",
+    "Edit(//root/**)",
+    "Bash(node *)",
+    "Bash(npm *)",
+    "Bash(npx *)",
+    "Bash(python *)",
+    "Bash(python3 *)",
+    "Bash(pip *)",
+    "Bash(pip3 *)",
+    "Bash(uv *)",
+    "Bash(git *)",
+    "Bash(mkdir *)",
+    "Bash(cd *)",
+    "Bash(rg *)",
+    "Bash(claude mcp add *)",
+    "Bash(claude mcp add-json *)",
+    "Bash(claude mcp list *)",
+    "Bash(claude mcp get *)",
+    "Bash(claude mcp remove *)",
+    "Bash(claude mcp --help)",
+    "Bash(/usr/bin/claude mcp add *)",
+    "Bash(/usr/bin/claude mcp add-json *)",
+    "Bash(/usr/bin/claude mcp list *)",
+    "Bash(/usr/bin/claude mcp get *)",
+    "Bash(/usr/bin/claude mcp remove *)",
+    "Bash(/usr/bin/claude mcp --help)",
+
+    `Read(/${FRONTEND_PROJECT}/**)`,
+    `Edit(/${FRONTEND_PROJECT}/**)`,
+    `Write(/${FRONTEND_PROJECT}/**)`,
     `Edit(${ROOT_CLAUDE_MD_PERMISSION})`
   ];
   const deny=[
-    'Bash','Agent','NotebookEdit',
-    ...protectedHostPaths.map(path=>`Read(${path})`),
-    ...protectedProjectPaths.map(path=>`Read(${path})`),
+    'Agent','NotebookEdit',
+    ...protectedHostPaths.map(path=>`Read(/${path})`),
+    ...protectedProjectPaths.map(path=>`Read(/${path})`),
     ...writeDeniedPaths.flatMap(path=>path==='/root/**'
-      ? [`Write(${path})`]
-      : [`Edit(${path})`,`Write(${path})`])
+      ? [`Write(/${path})`]
+      : [`Edit(/${path})`,`Write(/${path})`])
   ];
   return {
     showThinkingSummaries:true,
@@ -70,8 +119,12 @@ export function createSessionPolicy(httpHook){
     sandbox:{
       enabled:true,
       autoAllowBashIfSandboxed:false,
+      failIfUnavailable:true,
+      allowUnsandboxedCommands:false,
+      network:{allowLocalBinding:true,allowedDomains:["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "127.0.0.1:4173"]},
+      excludedCommands:["claude mcp add *", "claude mcp add-json *", "claude mcp list *", "claude mcp get *", "claude mcp remove *", "claude mcp --help", "/usr/bin/claude mcp add *", "/usr/bin/claude mcp add-json *", "/usr/bin/claude mcp list *", "/usr/bin/claude mcp get *", "/usr/bin/claude mcp remove *", "/usr/bin/claude mcp --help"],
       filesystem:{
-        allowWrite:[`${FRONTEND_PROJECT}/**`,ROOT_CLAUDE_MD],
+        allowWrite:[`${FRONTEND_PROJECT}/**`,ROOT_CLAUDE_MD,'/root/**'],
         denyWrite:writeDeniedPaths,
         denyRead:[...protectedHostPaths,...protectedProjectPaths]
       }
@@ -88,12 +141,12 @@ export function createSessionPolicy(httpHook){
 
 export function sessionPolicyEvidence(value){
   const allow=value?.permissions?.allow||[],deny=value?.permissions?.deny||[],filesystem=value?.sandbox?.filesystem||{};
-  const requiredAllow=[`Read(${FRONTEND_PROJECT}/**)`,`Edit(${FRONTEND_PROJECT}/**)`,`Write(${FRONTEND_PROJECT}/**)`,`Edit(${ROOT_CLAUDE_MD_PERMISSION})`,'mcp__qiuqiu-frontend__send_frontend_message'];
-  const requiredDeny=['Bash','Agent','NotebookEdit','Read(/root/.claude/**)','Read(/root/.ssh/**)','Write(/root/**)'];
-  const forbiddenDeny=['Edit(/root/**)',`Edit(!${ROOT_CLAUDE_MD})`];
+  const requiredAllow=['mcp__galatea-garden__*','Read(//root/**)','Edit(//root/**)',"Bash(node *)","Bash(npm *)","Bash(npx *)","Bash(python *)","Bash(python3 *)","Bash(pip *)","Bash(pip3 *)","Bash(uv *)","Bash(git *)","Bash(mkdir *)","Bash(cd *)","Bash(rg *)",'WebFetch',`Read(/${FRONTEND_PROJECT}/**)`,`Edit(/${FRONTEND_PROJECT}/**)`,`Write(/${FRONTEND_PROJECT}/**)`,`Edit(${ROOT_CLAUDE_MD_PERMISSION})`,'mcp__qiuqiu-frontend__send_frontend_message'];
+  const requiredDeny=['Agent','NotebookEdit','Read(//root/.claude/**)','Read(//root/.ssh/**)','Edit(//root/.claude/**)','Edit(//root/.ssh/**)'];
+  const forbiddenDeny=['Bash','Write(//root/**)','Edit(//root/**)',`Edit(!${ROOT_CLAUDE_MD})`];
   const writeGuard=value?.hooks?.PreToolUse?.some(group=>group?.matcher==='Edit|Write|NotebookEdit'&&group?.hooks?.some(hook=>hook?.type==='command'&&hook?.command===`/usr/bin/node "${ROOT_WRITE_GUARD}"`));
   return value?.showThinkingSummaries===true&&value?.alwaysThinkingEnabled===undefined&&value?.permissions?.defaultMode==='default'&&writeGuard===true&&
     requiredAllow.every(rule=>allow.includes(rule))&&requiredDeny.every(rule=>deny.includes(rule))&&!forbiddenDeny.some(rule=>deny.includes(rule))&&
     value?.sandbox?.enabled===true&&value?.sandbox?.autoAllowBashIfSandboxed===false&&
-    filesystem.allowWrite?.includes(`${FRONTEND_PROJECT}/**`)&&filesystem.allowWrite?.includes(ROOT_CLAUDE_MD)&&filesystem.denyRead?.includes('/root/.claude/**')&&filesystem.denyWrite?.includes('/root/**');
+    filesystem.allowWrite?.includes(`${FRONTEND_PROJECT}/**`)&&filesystem.allowWrite?.includes(ROOT_CLAUDE_MD)&&filesystem.denyRead?.includes('/root/.claude/**')&&filesystem.denyWrite?.includes('/root/.claude/**')&&filesystem.allowWrite?.includes('/root/**');
 }

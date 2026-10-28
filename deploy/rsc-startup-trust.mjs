@@ -26,8 +26,16 @@ export function classifyStartupScreen(screen){
  return {kind:'UNKNOWN',interactive:/\b(?:enter|esc|cancel|continue|select|choose)\b|(?:^|\n)\s*[❯>]?\s*\d+\.\s+/im.test(text),text};
 }
 
+export function lastGoodResumeIdleScreen(screen){
+ const text=strip(screen),semantic=classifyStartupScreen(text);
+ if(!['READY','UNKNOWN'].includes(semantic.kind)||semantic.interactive===true||/\b(?:loading|starting|initializing|working|thinking|esc to interrupt)\b/i.test(text))return false;
+ const lines=text.split('\n'),rule=line=>/^\s*─{10,}\s*$/.test(line);
+ return lines.some((line,index)=>/^\s*❯\s*$/.test(line)&&index>0&&index+1<lines.length&&rule(lines[index-1])&&rule(lines[index+1]));
+}
+
 const startupFail=(reason,subreason=null)=>{throw fail(reason,subreason)};
 export function transcriptReadinessState(transcript={}){
+ if(transcript.lastGoodResumeFailure)return {state:'failed',subreason:transcript.lastGoodResumeFailure};
  if(transcript.wrongSessionRecord===true)return {state:'failed',subreason:'FAILED_TRANSCRIPT_SESSION'};
  if(transcript.hardFailure===true||transcript.reason==='MALFORMED_STABLE_RECORD'||(transcript.parseable===false&&transcript.writeInProgress!==true))return {state:'failed',subreason:'MALFORMED_STABLE_RECORD'};
  if(transcript.writeInProgress===true)return {state:'waiting',subreason:'WRITE_IN_PROGRESS'};
@@ -38,6 +46,7 @@ export function transcriptReadinessState(transcript={}){
  return {state:'ready',subreason:null};
 }
 export function durableReadyEvidence(transcript={}){
+ if(transcript.lastGoodResumeFailure)startupFail(transcript.lastGoodResumeFailure);
  if(transcript.wrongSessionRecord===true)startupFail('FAILED_TRANSCRIPT_SESSION');
  if(transcript.startupStructureValid===false||transcript.orphanStartupRecord===true)startupFail('FAILED_TRANSCRIPT_STRUCTURE');
  return transcript.parseable===true&&transcript.transcriptWritable===true&&transcript.resumeMilestone===true;
@@ -53,7 +62,7 @@ export async function waitForPostTrustReady({controller,pollMs=POST_TRUST_POLL_M
   if(runtime.ownershipIntact!==true||runtime.unexpectedClaudeOwner===true||runtime.unexpectedHelperOwner===true)startupFail('FAILED_OWNERSHIP_MISMATCH');
   if(runtime.uid!==0||runtime.home!=='/root'||runtime.canonicalCwd!=='/root')startupFail('FAILED_MANAGED_CONTEXT');
   const transcriptState=transcriptReadinessState(transcript);lastSubreason=transcriptState.subreason||lastSubreason;
-  if(transcriptState.state==='failed')startupFail(transcriptState.subreason==='FAILED_TRANSCRIPT_SESSION'?'FAILED_TRANSCRIPT_SESSION':'FAILED_TRANSCRIPT_PARSE',transcriptState.subreason);
+  if(transcriptState.state==='failed')startupFail(transcript.lastGoodResumeFailure||(transcriptState.subreason==='FAILED_TRANSCRIPT_SESSION'?'FAILED_TRANSCRIPT_SESSION':'FAILED_TRANSCRIPT_PARSE'),transcriptState.subreason);
   if(transcriptState.state==='ready'){
    if(transcript.user!==baseline.user)startupFail('UNEXPECTED_USER_RECORD');
    if(transcript.assistant!==baseline.assistant)startupFail('UNEXPECTED_ASSISTANT_RECORD');
@@ -63,7 +72,7 @@ export async function waitForPostTrustReady({controller,pollMs=POST_TRUST_POLL_M
   if(['TRUST_GATE','TRUST_GATE_CONFIRMED','BLANK_REDRAW','TRANSITIONAL_REDRAW'].includes(semantic.kind)){unknown=[]}
   else if(['OAUTH','LOGIN','THEME','PERMISSION_MODE','PERMISSION','MCP_GATE','RESUME_CONFIRMATION'].includes(semantic.kind)){startupFail('UNEXPECTED_POST_TRUST_GATE')}
   else {const signature=semantic.text.replace(/\s+/g,' ').trim();unknown=unknown.filter(item=>item.signature===signature);unknown.push({signature,at:now()});if(unknown.length>=3&&unknown.at(-1).at-unknown.at(-3).at>=500&&semantic.interactive)startupFail('UNEXPECTED_POST_TRUST_GATE')}
-  const durable=transcriptState.state==='ready'&&durableReadyEvidence(transcript)&&startup.frontendMcpConnected===true&&await controller.readyEvidence(runtime,transcript,startup)===true;
+  const durable=transcriptState.state==='ready'&&durableReadyEvidence(transcript)&&startup.frontendMcpConnected===true&&(transcript.lastGoodResumeVerified!==true||lastGoodResumeIdleScreen(screen))&&await controller.readyEvidence(runtime,transcript,startup)===true;
   if(durable){stableSince??=now();if(now()-stableSince>=READY_STABILIZATION_MS)return {state:'READY',semantic,inputCount:1,uiReadyEvidence,stabilizedMs:now()-stableSince}}
   else stableSince=null;
   const remaining=deadlineMs-(now()-started);if(remaining<=0)break;await sleep(Math.min(pollMs,remaining));

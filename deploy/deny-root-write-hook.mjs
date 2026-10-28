@@ -32,7 +32,10 @@ export async function rootWriteDecision(input,{resolvePath=realpath}={}){
   const lexical=posix.resolve(cwd,raw.replaceAll('\\','/'));
   const canonical=await canonicalize(raw,cwd,resolvePath);
   if(!inRoot(lexical)&&!inRoot(canonical))return {deny:false,lexical,canonical};
-  const allowed=input.tool_name==='Edit'&&lexical===ROOT_CLAUDE_MD&&canonical===ROOT_CLAUDE_MD;
+  const protectedRoots=['/root/.claude','/root/.ssh','/root/.config','/root/.local'];
+  const protectedFile=target=>protectedRoots.some(path=>target===path||target.startsWith(path+'/'))||/^\/root\/\.(?:mcp\.json|claude\.json(?:\..*)?|bash[^/]*|profile|env[^/]*)$/.test(target);
+  const persona=lexical===ROOT_CLAUDE_MD||canonical===ROOT_CLAUDE_MD;
+  const allowed=persona ? input.tool_name==='Edit'&&lexical===ROOT_CLAUDE_MD&&canonical===ROOT_CLAUDE_MD : !protectedFile(lexical)&&!protectedFile(canonical);
   return {deny:!allowed,allowed,lexical,canonical};
 }
 
@@ -42,7 +45,7 @@ async function main(){
   const input=JSON.parse(raw);
   const decision=await rootWriteDecision(input);
   if(!decision.deny)return;
-  process.stderr.write('File modification is denied for this /root path; only Edit on /root/CLAUDE.md is allowed.\n');
+  process.stderr.write('File modification is denied for this protected /root path; CLAUDE.md permits Edit only.\n');
   process.exitCode=2;
 }
 

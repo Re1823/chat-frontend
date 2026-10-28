@@ -1,0 +1,17 @@
+[Unit]
+Description=Recover proven completed Qiuqiu turns after cancelled Stop hooks
+After=chat-frontend.service qiuqiu-claude-bridge.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/qiuqiu-claude-bridge/reconcile-completed-turn.py --apply
+TimeoutStartSec=180
+UMask=0077
+StateDirectory=qiuqiu-completion-reconciler
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+ReadWritePaths=/var/lib/qiuqiu-completion-reconciler
